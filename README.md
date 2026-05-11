@@ -5,6 +5,43 @@ using Unicode braille characters (via [drawille](https://github.com/asciimoo/dra
 or as SVG. It supports four routing engines, ports as small boundary boxes, node
 attributes, multiple arrowhead styles, and label collision avoidance.
 
+```
+⡏⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⡇
+⡇     «block»       ⡇
+⡇       ECU         ⡇
+⡇⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠄⡇
+⡇+ voltage : float  ⡇
+⡇                   ⡇
+⡇  + temp : float   ⡇
+⡇  # state : int    ⡇
+⡇                   ⡇
+⠧⠤⠤⠤⠤⡤⠤⠤⠤⠤⡤⠤⠤⠤⠤⡤⠤⠤⠤⠤⠇
+    ⣼⣿⡄  ⣼⣿⡄  ⣼⣿⡄                      ⡰⠁⠑⠒⠒⠒⠒⠒⠒⢲
+    ⠹⡿⠁  ⠹⡿⠁  ⠹⡿⠁                      ⢸                ⢸
+     ⡇    ⡇    ⡇                              reads               ⢸
+     ⡇    ⡇    ⡇                              ⢸                ⢸
+     ⡇    ⡇    ⡇                              ⢸                ⢸
+     ⣇⣀⣀⡀ ⣇⣀⣀⣀⣀⣇⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀
+        ⡇                                        ⢸                                        ⡇
+        ⡇                  commands               ⢸  updates                               ⡇
+        ⡇                                        ⢸                                        ⡇
+        ⡇                                        ⢸                                        ⡇
+      ⠠⡀⡇⢀⠄                                     ⡄⢸ ⡄                                    ⢄ ⡇⢀⠄
+       ⠣⣧⠊                                      ⠈⣾⡎                                     ⠈⢢⣧⠊
+⡏⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⡏⠉⠉⠉⡇                ⡏⠉⠉⠉⡏⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⡇                    ⣀⣀⣀⣀⡏⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⡇
+⡇   «block»     ⡇→  ⡧out⠤⠤⠤⠤⠤⠤⠤⠤data⠤⡇→  ⡇    «block»     ⡇                 in ⡇→  ⡇  «block»    ⡇
+⡇SensorCluster  ⡇   ⡇                ⡇   ⡇ActuatorDriver  ⡧⠤⠤⠤⡖⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⡇   ⡇DisplayUnit  ⡇
+⡇⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠄⡏⠉⠉⠉⠁       data     ⠉⠉⠉⠉⡇⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠄⡇→  ⡇out  output     ⣇⣀⣀⣀⡇             ⡇
+⡇- calibrate()  ⡇                        ⡇   + apply()    ⡇   ⡇                    ⠧⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠇
+⡇               ⡏⠉⠉⠉⡇                ⡏⠉⠉⠉⡇
+⡇   + read()    ⡇→  ⡧cfg⠤⠤⠄ ⠤⠤⠄ ⠤cfg⠤⡇→  ⡇   - limit()    ⡇
+⡇               ⡇   ⡇                ⡇   ⡇
+⠓⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠋⠉⠉⠉⠁       config   ⠉⠉⠉⠉⠓⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠃
+```
+
+> Terminal output of `demo.py` — a SysML block diagram with top-down composition
+> edges and lateral port-to-port connections. Rendered with `routing='orthogonal'`.
+
 ## Installation
 
 ```bash
@@ -114,11 +151,11 @@ connectors and proxy ports.
 sensor = d.add_node('SensorCluster', ['block'])
 actuator = d.add_node('ActuatorDriver', ['block'])
 
-out_port = sensor.add_port('out', side='right')   # auto-distributed
-in_port  = actuator.add_port('in', side='left')
+out_port = sensor.add_port('out', side='right', direction='out')   # auto-distributed
+in_port  = actuator.add_port('in', side='left', direction='in')
 
 d.add_edge(sensor, actuator, source_port=out_port, target_port=in_port,
-           target_style=OPEN, label='data')
+           target_style=None, label='data')
 ```
 
 **Auto-distribution:** when `offset=None` (the default), ports on the same side
@@ -142,7 +179,8 @@ the side):
 port = node.add_port('out', side='right', offset=0.25)  # 25% from top
 ```
 
-Port-to-port edges use L-shaped (2-segment) routing.
+Port-to-port edges use Z-shaped (3-segment) routing with a perpendicular
+docking segment into the target port face.
 
 ### 5. Rendering to SVG
 
@@ -173,22 +211,22 @@ actuator = d.add_node('ActuatorDriver', ['block'],
     attributes=['+ apply()'])
 display  = d.add_node('DisplayUnit', ['block'])
 
-# Ports
-sns_out  = sensor.add_port('out', side='right', offset=0.3)
-act_in   = actuator.add_port('in', side='left', offset=0.3)
-act_out  = actuator.add_port('out', side='right', offset=0.5)
-disp_in  = display.add_port('in', side='left', offset=0.5)
+# Ports (direction: in = arrow toward node, out = arrow away from node)
+sns_out  = sensor.add_port('out', side='right', offset=0.3, direction='out')
+act_in   = actuator.add_port('in', side='left', offset=0.3, direction='in')
+act_out  = actuator.add_port('out', side='right', offset=0.5, direction='out')
+disp_in  = display.add_port('in', side='left', offset=0.5, direction='in')
 
 # Traditional top-down edges
 d.add_edge(ecu, sensor,   source_style=FILLED, target_style=OPEN, label='reads')
 d.add_edge(ecu, actuator, source_style=FILLED, target_style=OPEN, label='commands')
 d.add_edge(ecu, display,  source_style=FILLED, target_style=OPEN, label='updates')
 
-# Lateral port-to-port edges
+# Lateral port-to-port edges (port direction arrows suffice, no edge arrowheads)
 d.add_edge(sensor, actuator, source_port=sns_out, target_port=act_in,
-           target_style=OPEN, label='data')
+           target_style=None, label='data')
 d.add_edge(actuator, display, source_port=act_out, target_port=disp_in,
-           target_style=OPEN, label='output')
+           target_style=None, label='output')
 
 # Terminal output
 print(d.render(routing='orthogonal', node_gap=60))
@@ -232,8 +270,8 @@ Three-segment Manhattan paths (down → across → down) with:
   gets a 3 px vertical offset
 - **Reverse-edge handling** (source below target) — routes upward from the
   source's top port to the target's bottom port
-- **Port-to-port routing** via `_port_route()` — L-shaped (2-segment) paths
-  for edges with explicit `source_port`/`target_port`
+- **Port-to-port routing** via `_port_route()` — Z-shaped (3-segment) paths
+  with a 4 px perpendicular docking segment into the target port face
 
 Best for: medium diagrams (10–30 edges), SysML block diagrams, UML
 composite structure.
@@ -328,7 +366,7 @@ library to convert vector primitives to Unicode braille characters
 | `draw_relation()` | 92–107 | Straight line + arrowheads + perpendicular label |
 | `draw_polyline()` | 112–177 | Multi-segment polyline + arrowheads + Manhattan-midpoint label with collision avoidance |
 | `draw_class_box()` | 199–219 | Rectangular box + centered text + optional separator + attributes |
-| `draw_port_box()` | 186–194 | Small rectangle (14×10 px) with label |
+| `draw_port_box()` | 267–305 | Small rectangle (8×12 px) with optional direction arrow and label |
 
 **Label collision avoidance** (`draw_polyline()` lines 162–176):
 Uses a shared `used_labels` set. When a label position is already occupied
@@ -370,7 +408,7 @@ centering.
 | `svg_draw_port()` | Small rect + centered label |
 
 Arrowheads are computed as `(<polygon> ...)` vectors via `_arrow_polygon()`
-(lines 10–38), scaled to `ARROW_SIZE * 2` for better SVG visibility.
+(lines 44–81), scaled to `ARROW_SIZE` for better SVG visibility.
 
 ---
 
@@ -416,7 +454,7 @@ from boxes import (
 | `.side` | One of `'left'`, `'right'`, `'top'`, `'bottom'` |
 | `.offset` | Proportional position along side (0.0–1.0) or `None` for auto-distribution |
 | `.parent` | The owning `Node` |
-| `.x, .y, .w, .h` | Position and size (14×10 px) |
+| `.x, .y, .w, .h` | Position and size (8×12 px) |
 | `.cx, .cy` | Center coordinates |
 | `.box()` | Returns `(x1, y1, x2, y2)` |
 | `.update_pos()` | Recompute position from parent's current bounds |
