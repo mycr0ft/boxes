@@ -7,7 +7,8 @@ via ``set_text(pixel_x, pixel_y, text)`` which converts to character
 rows/columns via ``x // 2, y // 4``.
 
 Arrowhead styles:  OPEN (>), TRIANGLE (triangle), DIAMOND (diamond),
-FILLED (filled diamond).  Line styles: SOLID, DASHED.
+FILLED (filled diamond), DEFINITION (triangle + two trailing dots),
+REDEFINITION (triangle + trailing bar).  Line styles: SOLID, DASHED.
 
 Label collision avoidance in ``draw_polyline`` uses a spiral offset
 search against a ``used_labels`` shared set.
@@ -27,10 +28,23 @@ OPEN = 'open'
 TRIANGLE = 'triangle'
 DIAMOND = 'diamond'
 FILLED = 'filled'
+DEFINITION = 'definition'
+REDEFINITION = 'redefinition'
+REFERENCE_SUBSETTING = 'reference_subsetting'
+PORTION = 'portion'
 SOLID = 'solid'
 DASHED = 'dashed'
 
 ARROW_SIZE = 7
+
+
+def _arrow_backoff(style):
+    """Pixels to shorten the edge line so it stops at the arrowhead base."""
+    if style is None or style == NONE or style == FILLED:
+        return 0
+    if style == DIAMOND:
+        return round(ARROW_SIZE * 0.7 * 2)
+    return ARROW_SIZE
 
 
 # ── arrowhead drawing ──
@@ -84,11 +98,70 @@ def _draw_diamond(c, x, y, angle, size, fill=False):
                     c.set(fx, fy)
 
 
+def _draw_definition(c, x, y, angle, size):
+    _draw_triangle(c, x, y, angle, size)
+    hp = angle + pi / 2
+    d = size + 3
+    cx = round(x - cos(angle) * d)
+    cy = round(y - sin(angle) * d)
+    ox = round(cos(hp)) * 4
+    oy = round(sin(hp)) * 4
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            c.set(cx + ox + dx, cy + oy + dy)
+            c.set(cx - ox + dx, cy - oy + dy)
+
+
+def _draw_redefinition(c, x, y, angle, size):
+    _draw_triangle(c, x, y, angle, size)
+    dist = size + 2
+    bx = x - cos(angle) * dist
+    by = y - sin(angle) * dist
+    hp = angle + pi / 2
+    hw = size * 0.4
+    for px, py in line(bx + cos(hp) * hw, by + sin(hp) * hw,
+                       bx - cos(hp) * hw, by - sin(hp) * hw):
+        c.set(px, py)
+
+
+def _draw_reference_subsetting(c, x, y, angle, size):
+    _draw_triangle(c, x, y, angle, size)
+    hp = angle + pi / 2
+    ox = round(cos(hp)) * 4
+    oy = round(sin(hp)) * 4
+    for d in (size + 3, size + 8):
+        cx = round(x - cos(angle) * d)
+        cy = round(y - sin(angle) * d)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                c.set(cx + ox + dx, cy + oy + dy)
+                c.set(cx - ox + dx, cy - oy + dy)
+
+
+def _draw_portion(c, x, y, angle, size):
+    r = round(size * 0.6)
+    cx = round(x - cos(angle) * r)
+    cy = round(y - sin(angle) * r)
+    mouth_half = pi / 4
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if dx * dx + dy * dy > r * r:
+                continue
+            pa = atan2(dy, dx)
+            diff = ((pa - (angle + pi) + pi) % (2 * pi)) - pi
+            if abs(diff) > mouth_half:
+                c.set(cx + dx, cy + dy)
+
+
 _ARROW_DRAWERS = {
     OPEN: _draw_open,
     TRIANGLE: _draw_triangle,
     DIAMOND: lambda c, x, y, a, s: _draw_diamond(c, x, y, a, s, False),
     FILLED: lambda c, x, y, a, s: _draw_diamond(c, x, y, a, s, True),
+    DEFINITION: _draw_definition,
+    REDEFINITION: _draw_redefinition,
+    REFERENCE_SUBSETTING: _draw_reference_subsetting,
+    PORTION: _draw_portion,
 }
 
 
@@ -150,8 +223,24 @@ def draw_relation(c, x1, y1, x2, y2, line_style=SOLID, source=None, target=None,
     label : str or None
         Text placed perpendicular to the line at its midpoint.
     """
-    draw_line(c, x1, y1, x2, y2, line_style)
-    angle = atan2(y2 - y1, x2 - x1)
+    sx, sy, tx, ty = x1, y1, x2, y2
+    dx_total, dy_total = x2 - x1, y2 - y1
+    length = max(1, (dx_total * dx_total + dy_total * dy_total) ** 0.5)
+
+    if target and target != NONE:
+        bo = _arrow_backoff(target)
+        if bo:
+            tx = x2 - dx_total / length * bo
+            ty = y2 - dy_total / length * bo
+
+    if source and source != NONE:
+        bo = _arrow_backoff(source)
+        if bo:
+            sx = x1 + dx_total / length * bo
+            sy = y1 + dy_total / length * bo
+
+    draw_line(c, sx, sy, tx, ty, line_style)
+    angle = atan2(dy_total, dx_total)
     draw_arrowhead(c, x2, y2, angle, target)
     draw_arrowhead(c, x1, y1, angle + pi, source)
     if label:
@@ -175,8 +264,32 @@ def draw_polyline(c, points, line_style=SOLID, source=None, target=None, label=N
 
     used_labels : set of (x, y) tuples — occupied label positions to avoid.
     """
-    for i in range(len(points) - 1):
-        draw_line(c, *points[i], *points[i + 1], line_style)
+    pts = list(points)
+
+    # Shorten last segment so the line stops at the arrowhead base
+    if target and target != NONE and len(pts) >= 2:
+        bo = _arrow_backoff(target)
+        if bo:
+            x1, y1 = pts[-2]
+            x2, y2 = pts[-1]
+            if x1 == x2:
+                pts[-1] = (x2, y2 - bo if y2 > y1 else y2 + bo)
+            else:
+                pts[-1] = (x2 - bo if x2 > x1 else x2 + bo, y2)
+
+    # Shorten first segment so the line stops at the source arrowhead base
+    if source and source != NONE and len(pts) >= 2:
+        bo = _arrow_backoff(source)
+        if bo:
+            x1, y1 = pts[0]
+            x2, y2 = pts[1]
+            if x1 == x2:
+                pts[0] = (x1, y1 + bo if y2 > y1 else y1 - bo)
+            else:
+                pts[0] = (x1 + bo if x2 > x1 else x1 - bo, y1)
+
+    for i in range(len(pts) - 1):
+        draw_line(c, *pts[i], *pts[i + 1], line_style)
 
     # target arrowhead on last segment
     if target and len(points) >= 2:

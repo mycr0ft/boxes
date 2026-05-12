@@ -1,5 +1,5 @@
 from boxes.primitives import (
-    NONE, OPEN, TRIANGLE, DIAMOND, FILLED,
+    NONE, OPEN, TRIANGLE, DIAMOND, FILLED, DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION,
     SOLID, DASHED, ARROW_SIZE,
     draw_line, draw_arrowhead, draw_relation, draw_polyline, draw_class_box,
     draw_port_box, PORT_W, PORT_H,

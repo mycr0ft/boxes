@@ -23,10 +23,11 @@ sizes for typical diagrams.
 
 Arrowheads
 ----------
-Filled/polygon arrowheads (TRIANGLE, DIAMOND, FILLED) are computed as
-``<polygon>`` vectors via ``_arrow_polygon()``.  OPEN arrowheads are
-rendered as two ``<line>`` elements.  Arrow size matches ``ARROW_SIZE``
-(7 px in diagram coords), same as the braille renderer.
+Filled/polygon arrowheads (TRIANGLE, DIAMOND, FILLED, DEFINITION,
+REDEFINITION) are computed as ``<polygon>`` vectors via
+``_arrow_polygon()``.  OPEN arrowheads are rendered as two ``<line>``
+elements.  Arrow size matches ``ARROW_SIZE`` (7 px in diagram coords),
+same as the braille renderer.
 
 See also
 --------
@@ -38,13 +39,13 @@ from math import atan2, cos, sin, pi
 from xml.sax.saxutils import escape
 
 from boxes.primitives import SOLID, DASHED, NONE, OPEN, TRIANGLE, DIAMOND, FILLED, \
-    ARROW_SIZE, _port_arrow
+    DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION, ARROW_SIZE, _port_arrow, _arrow_backoff
 
 
 def _arrow_polygon(x, y, angle, style):
     """Return polygon/fill for an arrowhead, or (lines, None) for OPEN."""
-    if style == NONE or style is None:
-        return None, None
+    if style == NONE or style is None or style == PORTION:
+        return None, style if style == PORTION else None
     size = ARROW_SIZE
     if style == OPEN:
         lines = []
@@ -60,6 +61,18 @@ def _arrow_polygon(x, y, angle, style):
         by = y - sin(angle) * size
         pts = [
             tip,
+            (bx + cos(hp) * hw, by + sin(hp) * hw),
+            (bx - cos(hp) * hw, by - sin(hp) * hw),
+        ]
+        return pts, TRIANGLE
+    elif style == DEFINITION or style == REDEFINITION or style == REFERENCE_SUBSETTING:
+        # Same triangle polygon; extras drawn by _svg_arrow_extras
+        hp = angle + pi / 2
+        hw = size * 0.4
+        bx = x - cos(angle) * size
+        by = y - sin(angle) * size
+        pts = [
+            (x, y),
             (bx + cos(hp) * hw, by + sin(hp) * hw),
             (bx - cos(hp) * hw, by - sin(hp) * hw),
         ]
@@ -79,6 +92,58 @@ def _arrow_polygon(x, y, angle, style):
         ]
         fill = 'black' if style == FILLED else 'white'
         return pts, fill
+
+
+def _svg_draw_portion(c, x, y, angle):
+    r = ARROW_SIZE * 0.6
+    cx = x - cos(angle) * r
+    cy = y - sin(angle) * r
+    mouth_half = pi / 4
+    start_a = angle + pi + mouth_half
+    end_a = angle + pi - mouth_half
+    sx = cx + r * cos(start_a)
+    sy = cy + r * sin(start_a)
+    ex = cx + r * cos(end_a)
+    ey = cy + r * sin(end_a)
+    scx, scy = c.s(cx, cy)
+    ssx, ssy = c.s(sx, sy)
+    sex, sey = c.s(ex, ey)
+    sr = c.s(r)
+    d = f"M {scx:.1f},{scy:.1f} L {ssx:.1f},{ssy:.1f} A {sr:.1f},{sr:.1f} 0 1 1 {sex:.1f},{sey:.1f} Z"
+    c.elements.append(
+        f'<path d="{d}" fill="{c.STROKE}" stroke="{c.STROKE}" />'
+    )
+
+
+def _svg_arrow_extras(c, x, y, angle, style):
+    """Draw auxiliary elements for DEFINITION, REDEFINITION, or REFERENCE_SUBSETTING."""
+    size = ARROW_SIZE
+    if style == DEFINITION:
+        d = size + 3
+        cx = x - cos(angle) * d
+        cy = y - sin(angle) * d
+        hp = angle + pi / 2
+        ox = cos(hp) * 4
+        oy = sin(hp) * 4
+        c.add_circle(round(cx + ox), round(cy + oy), r=1.5, fill=c.STROKE)
+        c.add_circle(round(cx - ox), round(cy - oy), r=1.5, fill=c.STROKE)
+    elif style == REDEFINITION:
+        dist = size + 2
+        bx = x - cos(angle) * dist
+        by = y - sin(angle) * dist
+        hp = angle + pi / 2
+        hw = size * 0.4
+        c.add_line(bx + cos(hp) * hw, by + sin(hp) * hw,
+                   bx - cos(hp) * hw, by - sin(hp) * hw)
+    elif style == REFERENCE_SUBSETTING:
+        hp = angle + pi / 2
+        ox = cos(hp) * 4
+        oy = sin(hp) * 4
+        for d in (size + 3, size + 8):
+            cx = x - cos(angle) * d
+            cy = y - sin(angle) * d
+            c.add_circle(round(cx + ox), round(cy + oy), r=1.5, fill=c.STROKE)
+            c.add_circle(round(cx - ox), round(cy - oy), r=1.5, fill=c.STROKE)
 
 
 class SvgCanvas:
@@ -145,6 +210,16 @@ class SvgCanvas:
             f' stroke="{stroke}" stroke-width="{width}" />'
         )
 
+    def add_circle(self, x, y, r=1, fill=None, stroke=None):
+        fill = fill or self.STROKE
+        stroke = stroke or self.STROKE
+        x, y = self.s(x, y)
+        r = self.s(r)
+        self.elements.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}"'
+            f' fill="{fill}" stroke="{stroke}" />'
+        )
+
     def add_polyline(self, points, stroke=None, width=None, dashed=False):
         stroke = stroke or self.STROKE
         width = width or self.stroke_width
@@ -198,7 +273,29 @@ def svg_draw_edge(c, e):
     if len(e.waypoints) >= 2:
         pts = list(e.waypoints)
         dashed = e.line_style == DASHED
-        c.add_polyline(pts, dashed=dashed)
+
+        # Build polyline points, shortened at arrowhead ends
+        draw_pts = list(pts)
+        if e.target_style and e.target_style != NONE:
+            bo = _arrow_backoff(e.target_style)
+            if bo:
+                x1, y1 = draw_pts[-2]
+                x2, y2 = draw_pts[-1]
+                if x1 == x2:
+                    draw_pts[-1] = (x2, y2 - bo if y2 > y1 else y2 + bo)
+                else:
+                    draw_pts[-1] = (x2 - bo if x2 > x1 else x2 + bo, y2)
+        if e.source_style and e.source_style != NONE:
+            bo = _arrow_backoff(e.source_style)
+            if bo:
+                x1, y1 = draw_pts[0]
+                x2, y2 = draw_pts[1]
+                if x1 == x2:
+                    draw_pts[0] = (x1, y1 + bo if y2 > y1 else y1 - bo)
+                else:
+                    draw_pts[0] = (x1 + bo if x2 > x1 else x1 - bo, y1)
+
+        c.add_polyline(draw_pts, dashed=dashed)
 
         # Arrowheads at the ends
         if e.target_style and e.target_style != NONE and len(pts) >= 2:
@@ -206,24 +303,34 @@ def svg_draw_edge(c, e):
             dy = pts[-1][1] - pts[-2][1]
             angle = atan2(dy, dx)
             poly, fill = _arrow_polygon(pts[-1][0], pts[-1][1], angle, e.target_style)
-            if poly:
+            if fill == PORTION:
+                _svg_draw_portion(c, pts[-1][0], pts[-1][1], angle)
+            elif poly:
                 if fill == 'open':
                     for x1, y1, x2, y2 in poly:
                         c.add_line(x1, y1, x2, y2)
                 else:
-                    c.add_polygon(poly, fill=fill, stroke=c.STROKE if fill == 'white' else fill)
+                    color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
+                    c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
+            if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
+                _svg_arrow_extras(c, pts[-1][0], pts[-1][1], angle, fill)
 
         if e.source_style and e.source_style != NONE and len(pts) >= 2:
             dx = pts[1][0] - pts[0][0]
             dy = pts[1][1] - pts[0][1]
             angle = atan2(dy, dx)
             poly, fill = _arrow_polygon(pts[0][0], pts[0][1], angle + pi, e.source_style)
-            if poly:
+            if fill == PORTION:
+                _svg_draw_portion(c, pts[0][0], pts[0][1], angle + pi)
+            elif poly:
                 if fill == 'open':
                     for x1, y1, x2, y2 in poly:
                         c.add_line(x1, y1, x2, y2)
                 else:
-                    c.add_polygon(poly, fill=fill, stroke=c.STROKE if fill == 'white' else fill)
+                    color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
+                    c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
+            if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
+                _svg_arrow_extras(c, pts[0][0], pts[0][1], angle + pi, fill)
 
         # Label at midpoint
         if e.label:
@@ -256,16 +363,43 @@ def svg_draw_edge(c, e):
         # Fallback straight line
         sx, sy = e.source.cx, e.source.cy
         tx, ty = e.target.cx, e.target.cy
+        dx_total, dy_total = tx - sx, ty - sy
+        length = max(1, (dx_total * dx_total + dy_total * dy_total) ** 0.5)
+
+        lsx, lsy = sx, sy
+        if e.source_style and e.source_style != NONE:
+            bo = _arrow_backoff(e.source_style)
+            if bo:
+                lsx = sx + dx_total / length * bo
+                lsy = sy + dy_total / length * bo
+
+        ltx, lty = tx, ty
+        if e.target_style and e.target_style != NONE:
+            bo = _arrow_backoff(e.target_style)
+            if bo:
+                ltx = tx - dx_total / length * bo
+                lty = ty - dy_total / length * bo
+
         dashed = e.line_style == DASHED
-        c.add_line(sx, sy, tx, ty, dashed=dashed)
+        c.add_line(lsx, lsy, ltx, lty, dashed=dashed)
 
         angle = atan2(ty - sy, tx - sx)
         poly, fill = _arrow_polygon(tx, ty, angle, e.target_style)
-        if poly:
-            c.add_polygon(poly, fill=fill, stroke=c.STROKE if fill == 'white' else fill)
+        if fill == PORTION:
+            _svg_draw_portion(c, tx, ty, angle)
+        elif poly:
+            color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
+            c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
+        if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
+            _svg_arrow_extras(c, tx, ty, angle, fill)
         poly, fill = _arrow_polygon(sx, sy, angle + pi, e.source_style)
-        if poly:
-            c.add_polygon(poly, fill=fill, stroke=c.STROKE if fill == 'white' else fill)
+        if fill == PORTION:
+            _svg_draw_portion(c, sx, sy, angle + pi)
+        elif poly:
+            color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
+            c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
+        if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
+            _svg_arrow_extras(c, sx, sy, angle + pi, fill)
 
         if e.label:
             mx, my = (sx + tx) // 2, (sy + ty) // 2

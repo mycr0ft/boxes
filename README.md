@@ -134,6 +134,10 @@ d.add_edge(source, target, line_style=DASHED)              # dashed line
 | `TRIANGLE` | `△` | Generalization / inheritance |
 | `DIAMOND` | `◇` | Aggregation (unfilled) |
 | `FILLED` | `◆` | Composition (filled) |
+| `DEFINITION` | `△⋯` | SysMLv2 definition (triangle + two dots) |
+| `REDEFINITION` | `△∣` | SysMLv2 redefinition (triangle + bar) |
+| `REFERENCE_SUBSETTING` | `△⋯⋯` | SysMLv2 reference-subsetting (triangle + two dot pairs) |
+| `PORTION` | `◐` | Pac-man shape (filled circle with wedge cut from trailing side) |
 
 #### Line styles
 
@@ -141,6 +145,26 @@ d.add_edge(source, target, line_style=DASHED)              # dashed line
 |----------|-----------|
 | `SOLID` | ─── continuous line |
 | `DASHED` | ╌╌ dashed line |
+
+#### Convenience methods for common UML relationships
+
+`Diagram` provides three shorthand methods that set the correct arrowhead
+and line styles automatically:
+
+```python
+d.compose(whole, part, label='contains')     # FILLED diamond, solid line
+d.aggregate(whole, part, label='has')         # DIAMOND (empty), solid line
+d.generalize(child, parent, label='is a')     # TRIANGLE (open), solid line
+d.depend(client, supplier, label='uses')      # OPEN arrow, dashed line
+d.annotate(client, supplier, label='spec')    # OPEN arrow, dashed line (SysMLv2)
+```
+
+Each accepts the same `**kw` as `add_edge` — pass `label`, `source_port`,
+`target_port`, etc. Explicit `source_style`/`target_style` override the
+defaults.
+
+Run `poetry run python demo_relations.py` to see all arrowhead styles
+and convenience methods in action.
 
 ### 4. Ports
 
@@ -419,7 +443,7 @@ Arrowheads are computed as `(<polygon> ...)` vectors via `_arrow_polygon()`
 ```python
 from boxes import (
     # Arrowhead styles
-    NONE, OPEN, TRIANGLE, DIAMOND, FILLED,
+    NONE, OPEN, TRIANGLE, DIAMOND, FILLED, DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION,
     # Line styles
     SOLID, DASHED,
     # Drawing primitives
@@ -464,7 +488,7 @@ from boxes import (
 | Parameter | Description |
 |-----------|-------------|
 | `Edge(source, target, ...)` | `source`/`target` are `Node` objects |
-| `source_style` | Arrowhead at source: `NONE`, `OPEN`, `TRIANGLE`, `DIAMOND`, `FILLED` |
+| `source_style` | Arrowhead at source: `NONE`, `OPEN`, `TRIANGLE`, `DIAMOND`, `FILLED`, `DEFINITION`, `REDEFINITION`, `REFERENCE_SUBSETTING`, `PORTION` |
 | `target_style` | Arrowhead at target (default: `OPEN`) |
 | `line_style` | `SOLID` or `DASHED` |
 | `label` | Text label at midpoint (optional) |
@@ -479,6 +503,11 @@ from boxes import (
 |--------|-------------|
 | `add_node(name, stereotypes=None, attributes=None)` | Create and register a `Node` |
 | `add_edge(source, target, **kw)` | Create and register an `Edge` |
+| `compose(whole, part, **kw)` | Composition: `source_style=FILLED`, `target_style=NONE` |
+| `aggregate(whole, part, **kw)` | Aggregation: `source_style=DIAMOND`, `target_style=NONE` |
+| `generalize(child, parent, **kw)` | Generalization: `source_style=NONE`, `target_style=TRIANGLE` |
+| `depend(client, supplier, **kw)` | Dependency: `line_style=DASHED`, `target_style=OPEN` |
+| `annotate(client, supplier, **kw)` | SysMLv2 annotation (same style as `depend`) |
 | `layout(routing='orthogonal', layer_gap=50, node_gap=12, margin=8)` | Compute positions and waypoints |
 | `render(routing='orthogonal', ...)` | Layout + return terminal braille string |
 | `render_svg(routing='orthogonal', ..., scale=1.5)` | Layout + return SVG string |

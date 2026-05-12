@@ -24,7 +24,7 @@ svg_canvas.py: SVG vector drawing
 
 from drawille import Canvas
 from boxes.primitives import draw_polyline, draw_relation, draw_class_box, draw_port_box, \
-    SOLID, OPEN, PORT_W, PORT_H
+    SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, PORT_W, PORT_H
 from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port
 
 _MIN_PORT_SPACING = 8
@@ -323,6 +323,62 @@ class Diagram:
         e = Edge(source, target, **kw)
         self.edges.append(e)
         return e
+
+    def compose(self, whole, part, **kw):
+        """Convenience: composition edge (filled diamond at whole, no arrow).
+
+        Parameters
+        ----------
+        whole, part : Node
+        **kw
+            Passed through to ``add_edge``.  Overrides ``source_style``
+            and ``target_style`` if provided.
+
+        Returns
+        -------
+        Edge
+        """
+        kw.setdefault('source_style', FILLED)
+        kw.setdefault('target_style', NONE)
+        return self.add_edge(whole, part, **kw)
+
+    def aggregate(self, whole, part, **kw):
+        """Convenience: aggregation edge (empty diamond at whole, no arrow)."""
+        kw.setdefault('source_style', DIAMOND)
+        kw.setdefault('target_style', NONE)
+        return self.add_edge(whole, part, **kw)
+
+    def depend(self, client, supplier, **kw):
+        """Convenience: dependency edge (dashed, open arrow at supplier)."""
+        kw.setdefault('line_style', DASHED)
+        kw.setdefault('target_style', OPEN)
+        kw.setdefault('source_style', NONE)
+        return self.add_edge(client, supplier, **kw)
+
+    def annotate(self, client, supplier, **kw):
+        """Convenience: SysMLv2 annotation edge (same style as dependency).
+
+        An annotation in SysMLv2 is a dashed line with an open arrow at the
+        element being annotated — identical styling to ``depend()``.
+        """
+        return self.depend(client, supplier, **kw)
+
+    def generalize(self, child, parent, **kw):
+        """Convenience: UML generalization / inheritance (open triangle at parent).
+
+        Parameters
+        ----------
+        child, parent : Node
+        **kw
+            Passed through to ``add_edge``.
+
+        Returns
+        -------
+        Edge
+        """
+        kw.setdefault('source_style', NONE)
+        kw.setdefault('target_style', TRIANGLE)
+        return self.add_edge(child, parent, **kw)
 
     def _assign_layers(self):
         incoming = {n: set() for n in self.nodes}
