@@ -418,6 +418,22 @@ def draw_port_box(c, x, y, label=None, side='left', direction=None):
             c.set_text(x + PORT_W // 2 - len(label), y + PORT_H + 1, label)
 
 
+# ── comment box (dog-ear) ──
+
+COMMENT_FOLD = 16
+
+def draw_comment_box(c, x1, y1, x2, y2, text):
+    fold = min(COMMENT_FOLD, (x2 - x1) // 3, (y2 - y1) // 3)
+    for rx, ry in line(x1, y1, x2 - fold, y1): c.set(rx, ry)
+    for rx, ry in line(x2 - fold, y1, x2, y1 + fold): c.set(rx, ry)
+    for rx, ry in line(x2, y1 + fold, x2, y2): c.set(rx, ry)
+    for rx, ry in line(x2, y2, x1, y2): c.set(rx, ry)
+    for rx, ry in line(x1, y2, x1, y1): c.set(rx, ry)
+    box_cx = (x1 + x2) // 2
+    box_cy = (y1 + y2) // 2
+    c.set_text(box_cx - len(text), box_cy - 2, text)
+
+
 # ── box ──
 
 def draw_class_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):

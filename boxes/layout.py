@@ -24,8 +24,9 @@ svg_canvas.py: SVG vector drawing
 
 from drawille import Canvas
 from boxes.primitives import draw_polyline, draw_relation, draw_class_box, draw_port_box, \
+    draw_comment_box, \
     SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, PORT_W, PORT_H
-from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port
+from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port, svg_draw_comment
 
 _MIN_PORT_SPACING = 8
 from collections import defaultdict
@@ -176,6 +177,36 @@ class Node:
         return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
 
 
+class Comment:
+    """A comment/documentation node with a folded (dog-ear) corner.
+
+    Comments are drawn as rectangles with the top-right corner folded
+    over (dog-ear), distinguishing them from regular classifier boxes.
+
+    Parameters
+    ----------
+    text : str
+        The comment text shown inside the box.
+    """
+
+    def __init__(self, text):
+        self.text = text
+        self.x = self.y = 0
+        self.w = max(len(text) * 2 + 6, 26)
+        self.h = 21
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+
 class Edge:
     """A directed or undirected connection between two nodes (or ports).
 
@@ -249,6 +280,7 @@ class Diagram:
 
     def __init__(self):
         self.nodes = []
+        self.comments = []
         self.edges = []
 
     def add_node(self, name, stereotypes=None, attributes=None):
@@ -271,6 +303,26 @@ class Diagram:
         n = Node(name, stereotypes, attributes)
         self.nodes.append(n)
         return n
+
+    def add_comment(self, text):
+        """Create a comment node and register it with the diagram.
+
+        Comments are drawn as rectangles with a folded (dog-ear)
+        top-right corner.  They are placed below regular nodes in
+        the layout.
+
+        Parameters
+        ----------
+        text : str
+            The comment text shown inside the box.
+
+        Returns
+        -------
+        Comment
+        """
+        c = Comment(text)
+        self.comments.append(c)
+        return c
 
     def _update_port_positions(self):
         for n in self.nodes:
@@ -631,6 +683,43 @@ class Diagram:
         else:
             self._route_straight(e, layer_of)
 
+    # ── comment edge routing ──
+
+    def _route_comment_edge(self, e):
+        com = e.source if isinstance(e.source, Comment) else e.target
+        other = e.target if isinstance(e.source, Comment) else e.source
+        is_source_comment = isinstance(e.source, Comment)
+
+        dx = other.cx - com.cx
+        dy = other.cy - com.cy
+
+        if abs(dx) >= abs(dy):
+            if dx >= 0:
+                cx, cy = com.x + com.w, com.cy
+            else:
+                cx, cy = com.x, com.cy
+        else:
+            if dy >= 0:
+                cx, cy = com.cx, com.y + com.h
+            else:
+                cx, cy = com.cx, com.y
+
+        if abs(dx) >= abs(dy):
+            if dx >= 0:
+                nx, ny = other.x, other.cy
+            else:
+                nx, ny = other.x + other.w, other.cy
+        else:
+            if dy >= 0:
+                nx, ny = other.cx, other.y
+            else:
+                nx, ny = other.cx, other.y + other.h
+
+        if is_source_comment:
+            e.route((cx, cy), (nx, ny))
+        else:
+            e.route((nx, ny), (cx, cy))
+
     # ── Sugiyama routing ──
 
     def _route_sugiyama(self, node_gap, margin):
@@ -701,9 +790,24 @@ class Diagram:
             y += max_h + layer_gap
 
         self._update_port_positions()
+
+        # Place comments below the last layer of nodes
+        if self.comments:
+            max_y = max((n.y + n.h for n in self.nodes), default=y)
+            gap = layer_gap
+            x = margin
+            row_h = 0
+            for com in self.comments:
+                com.x = x
+                com.y = max_y + gap
+                x += com.w + node_gap
+                row_h = max(row_h, com.h)
+
         gap_used = {}
         for e in self.edges:
-            if routing == 'orthogonal':
+            if isinstance(e.source, Comment) or isinstance(e.target, Comment):
+                self._route_comment_edge(e)
+            elif routing == 'orthogonal':
                 self._route_orthogonal(e, layer_of, layers, gap_used)
             else:
                 self._route_straight(e, layer_of)
@@ -732,6 +836,8 @@ class Diagram:
             draw_class_box(c, n.x, n.y, n.x + n.w, n.y + n.h, n.name, n.stereotypes, n.attributes)
             for p in n.ports:
                 draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
+        for com in self.comments:
+            draw_comment_box(c, com.x, com.y, com.x + com.w, com.y + com.h, com.text)
         return c.frame()
 
     def render_svg(self, routing='orthogonal', layer_gap=50, node_gap=12, margin=8, scale=1.5):
@@ -747,6 +853,9 @@ class Diagram:
             for p in n.ports:
                 xs.extend([p.x, p.x + p.w])
                 ys.extend([p.y, p.y + p.h])
+        for com in self.comments:
+            xs.extend([com.x, com.x + com.w])
+            ys.extend([com.y, com.y + com.h])
         for e in self.edges:
             for px, py in e.waypoints:
                 xs.append(px)
@@ -765,4 +874,6 @@ class Diagram:
             svg_draw_node(c, n)
             for p in n.ports:
                 svg_draw_port(c, p)
+        for com in self.comments:
+            svg_draw_comment(c, com)
         return c.output(width=w, height=h, padding=pad * scale)

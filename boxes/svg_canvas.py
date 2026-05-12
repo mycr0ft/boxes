@@ -39,7 +39,8 @@ from math import atan2, cos, sin, pi
 from xml.sax.saxutils import escape
 
 from boxes.primitives import SOLID, DASHED, NONE, OPEN, TRIANGLE, DIAMOND, FILLED, \
-    DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION, ARROW_SIZE, _port_arrow, _arrow_backoff
+    DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION, ARROW_SIZE, COMMENT_FOLD, \
+    _port_arrow, _arrow_backoff
 
 
 def _arrow_polygon(x, y, angle, style):
@@ -430,6 +431,21 @@ def svg_draw_node(c, n):
         if txt == '' and n.attributes:
             continue
         c.add_text(box_cx, y + 4, txt, anchor='middle')
+
+
+def svg_draw_comment(c, com):
+    fold = min(COMMENT_FOLD, com.w // 3, com.h // 3)
+    x1, y1 = com.x, com.y
+    x2, y2 = com.x + com.w, com.y + com.h
+    pts = [
+        (x1, y1),
+        (x2 - fold, y1),
+        (x2, y1 + fold),
+        (x2, y2),
+        (x1, y2),
+    ]
+    c.add_polygon(pts, fill='white')
+    c.add_text(com.x + com.w // 2, com.y + com.h // 2 + 2, com.text, anchor='middle')
 
 
 def svg_draw_port(c, p):
