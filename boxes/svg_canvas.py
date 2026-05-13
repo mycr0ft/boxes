@@ -448,6 +448,45 @@ def svg_draw_comment(c, com):
     c.add_text(com.x + com.w // 2, com.y + com.h // 2 + 2, com.text, anchor='middle')
 
 
+def svg_draw_view(c, v):
+    tw = []
+    if v.stereotypes:
+        tw.extend(len(f'\u00ab{s}\u00bb') for s in v.stereotypes)
+    tw.append(len(v.name))
+    max_tw = max(tw) if tw else 0
+    tab_w = min(max_tw * 2 + 6, v.w)
+    n_lines = 1 + (len(v.stereotypes) if v.stereotypes else 0)
+    tab_h = n_lines * 5 + 4
+
+    x1, y1 = v.x, v.y
+    x2, y2 = v.x + v.w, v.y + v.h
+    pts = [
+        (x1, y1),
+        (x1 + tab_w, y1),
+        (x1 + tab_w, y1 + tab_h),
+        (x2, y1 + tab_h),
+        (x2, y2),
+        (x1, y2),
+    ]
+    c.add_polygon(pts, fill='white')
+
+    lines = []
+    if v.stereotypes:
+        for s in v.stereotypes:
+            lines.append(f'\u00ab{s}\u00bb')
+    lines.append(v.name)
+    for i, txt in enumerate(lines):
+        y = y1 + 2 + i * 5
+        c.add_text(x1 + tab_w // 2, y + 4, txt, anchor='middle')
+
+    if v.attributes:
+        sep_y = y1 + tab_h + 2
+        c.add_line(x1 + 2, sep_y, x2 - 2, sep_y)
+        for i, attr in enumerate(v.attributes):
+            y = sep_y + 2 + i * 5
+            c.add_text((x1 + x2) // 2, y + 4, attr, anchor='middle')
+
+
 def svg_draw_port(c, p):
     """Draw a port box with optional direction arrow inside and label outside."""
     c.add_rect(p.x, p.y, p.w, p.h, fill='white')

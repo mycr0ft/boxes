@@ -434,6 +434,44 @@ def draw_comment_box(c, x1, y1, x2, y2, text):
     c.set_text(box_cx - len(text), box_cy - 2, text)
 
 
+# ── view / package box (folder tab) ──
+
+def draw_view_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):
+    tw = []
+    if stereotypes:
+        tw.extend(len(f'\u00ab{s}\u00bb') for s in stereotypes)
+    tw.append(len(name))
+    max_tw = max(tw) if tw else 0
+    tab_w = min(max_tw * 2 + 6, x2 - x1)
+    n_lines = 1 + (len(stereotypes) if stereotypes else 0)
+    tab_h = n_lines * 5 + 4
+
+    for rx, ry in line(x1, y2, x1, y1): c.set(rx, ry)
+    for rx, ry in line(x1, y1, x1 + tab_w, y1): c.set(rx, ry)
+    for rx, ry in line(x1 + tab_w, y1, x1 + tab_w, y1 + tab_h): c.set(rx, ry)
+    for rx, ry in line(x1 + tab_w, y1 + tab_h, x2, y1 + tab_h): c.set(rx, ry)
+    for rx, ry in line(x2, y1 + tab_h, x2, y2): c.set(rx, ry)
+    for rx, ry in line(x2, y2, x1, y2): c.set(rx, ry)
+
+    lines = []
+    if stereotypes:
+        for s in stereotypes:
+            lines.append(f'\u00ab{s}\u00bb')
+    lines.append(name)
+    for i, txt in enumerate(lines):
+        y = y1 + 2 + i * 5
+        x = x1 + (tab_w // 2) - len(txt)
+        c.set_text(x, y, txt)
+
+    if attributes:
+        sep_y = y1 + tab_h + 2
+        for rx, ry in line(x1 + 2, sep_y, x2 - 2, sep_y): c.set(rx, ry)
+        for i, attr in enumerate(attributes):
+            y = sep_y + 2 + i * 5
+            text_x = (x1 + x2) // 2 - len(attr)
+            c.set_text(text_x, y, attr)
+
+
 # ── box ──
 
 def draw_class_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):

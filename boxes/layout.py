@@ -24,9 +24,9 @@ svg_canvas.py: SVG vector drawing
 
 from drawille import Canvas
 from boxes.primitives import draw_polyline, draw_relation, draw_class_box, draw_port_box, \
-    draw_comment_box, \
+    draw_comment_box, draw_view_box, \
     SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, PORT_W, PORT_H
-from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port, svg_draw_comment
+from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port, svg_draw_comment, svg_draw_view
 
 _MIN_PORT_SPACING = 8
 from collections import defaultdict
@@ -207,6 +207,61 @@ class Comment:
         return (self.x, self.y, self.x + self.w, self.y + self.h)
 
 
+class View:
+    """A view / package node with a folder-tab label area.
+
+    Views are drawn as a rectangle with a "tab" at the top-left corner
+    containing the name (and optional stereotypes).  Attributes appear
+    in the main content area below a separator.  This matches the UML
+    ``«package»`` and SysML ``«view»`` notation.
+
+    Parameters
+    ----------
+    name : str
+        Primary label shown in the tab.
+    stereotypes : list of str, optional
+        Stereotype labels (e.g. ``['view']``, ``['package']``).
+    attributes : list of str, optional
+        Attribute/method lines shown below a separator.
+    """
+
+    def __init__(self, name, stereotypes=None, attributes=None):
+        self.name = name
+        self.stereotypes = stereotypes or []
+        self.attributes = attributes or []
+        self.x = self.y = self.w = self.h = 0
+        self._calc_size()
+
+    def _calc_size(self):
+        tw = []
+        if self.stereotypes:
+            tw.extend(len(f'\u00ab{s}\u00bb') for s in self.stereotypes)
+        tw.append(len(self.name))
+        if self.attributes:
+            tw.extend(len(a) for a in self.attributes)
+        max_tw = max(tw) if tw else 0
+        self.w = max(max_tw * 2 + 6, 26)
+        tab_lines = 1 + len(self.stereotypes)
+        tab_h = tab_lines * 5 + 4
+        attr_h = (1 + len(self.attributes)) * 5 if self.attributes else 0
+        self.h = tab_h + attr_h + 6
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+    def add_attribute(self, text):
+        self.attributes.append(text)
+        self._calc_size()
+
+
 class Edge:
     """A directed or undirected connection between two nodes (or ports).
 
@@ -281,6 +336,7 @@ class Diagram:
     def __init__(self):
         self.nodes = []
         self.comments = []
+        self.views = []
         self.edges = []
 
     def add_node(self, name, stereotypes=None, attributes=None):
@@ -323,6 +379,30 @@ class Diagram:
         c = Comment(text)
         self.comments.append(c)
         return c
+
+    def add_view(self, name, stereotypes=None, attributes=None):
+        """Create a view / package node and register it with the diagram.
+
+        Views are drawn as rectangles with a folder-tab containing the
+        name (and optional stereotypes).  They are placed below regular
+        nodes in the layout.
+
+        Parameters
+        ----------
+        name : str
+            Primary label shown in the tab.
+        stereotypes : list of str, optional
+            Stereotype labels (e.g. ``['view']``, ``['package']``).
+        attributes : list of str, optional
+            Attribute/method lines shown below a separator.
+
+        Returns
+        -------
+        View
+        """
+        v = View(name, stereotypes, attributes)
+        self.views.append(v)
+        return v
 
     def _update_port_positions(self):
         for n in self.nodes:
@@ -435,6 +515,8 @@ class Diagram:
     def _assign_layers(self):
         incoming = {n: set() for n in self.nodes}
         for e in self.edges:
+            if isinstance(e.source, (Comment, View)) or isinstance(e.target, (Comment, View)):
+                continue
             incoming[e.target].add(e.source)
 
         roots = [n for n in self.nodes if not incoming[n]]
@@ -448,6 +530,8 @@ class Diagram:
                 continue
             layer_of[n] = l
             for e in self.edges:
+                if isinstance(e.target, (Comment, View)):
+                    continue
                 if e.source == n:
                     queue.append((e.target, l + 1))
 
@@ -683,26 +767,26 @@ class Diagram:
         else:
             self._route_straight(e, layer_of)
 
-    # ── comment edge routing ──
+    # ── special-node edge routing (Comment / View) ──
 
-    def _route_comment_edge(self, e):
-        com = e.source if isinstance(e.source, Comment) else e.target
-        other = e.target if isinstance(e.source, Comment) else e.source
-        is_source_comment = isinstance(e.source, Comment)
+    def _route_special_edge(self, e):
+        special = e.source if isinstance(e.source, (Comment, View)) else e.target
+        other = e.target if isinstance(e.source, (Comment, View)) else e.source
+        is_source_special = isinstance(e.source, (Comment, View))
 
-        dx = other.cx - com.cx
-        dy = other.cy - com.cy
+        dx = other.cx - special.cx
+        dy = other.cy - special.cy
 
         if abs(dx) >= abs(dy):
             if dx >= 0:
-                cx, cy = com.x + com.w, com.cy
+                sx, sy = special.x + special.w, special.cy
             else:
-                cx, cy = com.x, com.cy
+                sx, sy = special.x, special.cy
         else:
             if dy >= 0:
-                cx, cy = com.cx, com.y + com.h
+                sx, sy = special.cx, special.y + special.h
             else:
-                cx, cy = com.cx, com.y
+                sx, sy = special.cx, special.y
 
         if abs(dx) >= abs(dy):
             if dx >= 0:
@@ -715,10 +799,10 @@ class Diagram:
             else:
                 nx, ny = other.cx, other.y + other.h
 
-        if is_source_comment:
-            e.route((cx, cy), (nx, ny))
+        if is_source_special:
+            e.route((sx, sy), (nx, ny))
         else:
-            e.route((nx, ny), (cx, cy))
+            e.route((nx, ny), (sx, sy))
 
     # ── Sugiyama routing ──
 
@@ -791,22 +875,21 @@ class Diagram:
 
         self._update_port_positions()
 
-        # Place comments below the last layer of nodes
-        if self.comments:
+        # Place comments and views below the last layer of nodes
+        extras = self.comments + self.views
+        if extras:
             max_y = max((n.y + n.h for n in self.nodes), default=y)
             gap = layer_gap
             x = margin
-            row_h = 0
-            for com in self.comments:
-                com.x = x
-                com.y = max_y + gap
-                x += com.w + node_gap
-                row_h = max(row_h, com.h)
+            for item in extras:
+                item.x = x
+                item.y = max_y + gap
+                x += item.w + node_gap
 
         gap_used = {}
         for e in self.edges:
-            if isinstance(e.source, Comment) or isinstance(e.target, Comment):
-                self._route_comment_edge(e)
+            if isinstance(e.source, (Comment, View)) or isinstance(e.target, (Comment, View)):
+                self._route_special_edge(e)
             elif routing == 'orthogonal':
                 self._route_orthogonal(e, layer_of, layers, gap_used)
             else:
@@ -838,6 +921,8 @@ class Diagram:
                 draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
         for com in self.comments:
             draw_comment_box(c, com.x, com.y, com.x + com.w, com.y + com.h, com.text)
+        for v in self.views:
+            draw_view_box(c, v.x, v.y, v.x + v.w, v.y + v.h, v.name, v.stereotypes, v.attributes)
         return c.frame()
 
     def render_svg(self, routing='orthogonal', layer_gap=50, node_gap=12, margin=8, scale=1.5):
@@ -856,6 +941,9 @@ class Diagram:
         for com in self.comments:
             xs.extend([com.x, com.x + com.w])
             ys.extend([com.y, com.y + com.h])
+        for v in self.views:
+            xs.extend([v.x, v.x + v.w])
+            ys.extend([v.y, v.y + v.h])
         for e in self.edges:
             for px, py in e.waypoints:
                 xs.append(px)
@@ -876,4 +964,6 @@ class Diagram:
                 svg_draw_port(c, p)
         for com in self.comments:
             svg_draw_comment(c, com)
+        for v in self.views:
+            svg_draw_view(c, v)
         return c.output(width=w, height=h, padding=pad * scale)
