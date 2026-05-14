@@ -25,7 +25,7 @@ svg_canvas.py: SVG vector drawing
 from drawille import Canvas
 from boxes.primitives import draw_polyline, draw_relation, draw_class_box, draw_port_box, \
     draw_comment_box, draw_view_box, \
-    SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, PORT_W, PORT_H
+    SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, CIRCLE, PORT_W, PORT_H
 from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port, svg_draw_comment, svg_draw_view
 
 _MIN_PORT_SPACING = 8
@@ -494,6 +494,29 @@ class Diagram:
         element being annotated — identical styling to ``depend()``.
         """
         return self.depend(client, supplier, **kw)
+
+    def contain(self, container, element, **kw):
+        """Convenience: containment edge (circle at container end).
+
+        In UML/SysML, a containment relationship uses an open circle
+        at the container end to indicate namespace membership.
+
+        Parameters
+        ----------
+        container : Node or View
+            The owning namespace / container.
+        element : Node
+            The contained element.
+        **kw
+            Passed through to ``add_edge``.
+
+        Returns
+        -------
+        Edge
+        """
+        kw.setdefault('source_style', CIRCLE)
+        kw.setdefault('target_style', NONE)
+        return self.add_edge(container, element, **kw)
 
     def generalize(self, child, parent, **kw):
         """Convenience: UML generalization / inheritance (open triangle at parent).

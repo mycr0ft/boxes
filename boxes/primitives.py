@@ -32,6 +32,7 @@ DEFINITION = 'definition'
 REDEFINITION = 'redefinition'
 REFERENCE_SUBSETTING = 'reference_subsetting'
 PORTION = 'portion'
+CIRCLE = 'circle'
 SOLID = 'solid'
 DASHED = 'dashed'
 
@@ -138,6 +139,17 @@ def _draw_reference_subsetting(c, x, y, angle, size):
                 c.set(cx - ox + dx, cy - oy + dy)
 
 
+def _draw_circle(c, x, y, angle, size):
+    r = max(3, round(size * 0.5))
+    cx = round(x - cos(angle) * r)
+    cy = round(y - sin(angle) * r)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            d = round((dx*dx + dy*dy) ** 0.5)
+            if d == r:
+                c.set(cx + dx, cy + dy)
+
+
 def _draw_portion(c, x, y, angle, size):
     r = round(size * 0.6)
     cx = round(x - cos(angle) * r)
@@ -162,6 +174,7 @@ _ARROW_DRAWERS = {
     REDEFINITION: _draw_redefinition,
     REFERENCE_SUBSETTING: _draw_reference_subsetting,
     PORTION: _draw_portion,
+    CIRCLE: _draw_circle,
 }
 
 

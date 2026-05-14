@@ -39,14 +39,14 @@ from math import atan2, cos, sin, pi
 from xml.sax.saxutils import escape
 
 from boxes.primitives import SOLID, DASHED, NONE, OPEN, TRIANGLE, DIAMOND, FILLED, \
-    DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION, ARROW_SIZE, COMMENT_FOLD, \
+    DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION, CIRCLE, ARROW_SIZE, COMMENT_FOLD, \
     _port_arrow, _arrow_backoff
 
 
 def _arrow_polygon(x, y, angle, style):
     """Return polygon/fill for an arrowhead, or (lines, None) for OPEN."""
-    if style == NONE or style is None or style == PORTION:
-        return None, style if style == PORTION else None
+    if style == NONE or style is None or style in (PORTION, CIRCLE):
+        return None, style if style in (PORTION, CIRCLE) else None
     size = ARROW_SIZE
     if style == OPEN:
         lines = []
@@ -93,6 +93,13 @@ def _arrow_polygon(x, y, angle, style):
         ]
         fill = 'black' if style == FILLED else 'white'
         return pts, fill
+
+
+def _svg_draw_circle(c, x, y, angle):
+    r = max(3, ARROW_SIZE * 0.5)
+    cx = x - cos(angle) * r
+    cy = y - sin(angle) * r
+    c.add_circle(cx, cy, r, fill='none')
 
 
 def _svg_draw_portion(c, x, y, angle):
@@ -304,7 +311,9 @@ def svg_draw_edge(c, e):
             dy = pts[-1][1] - pts[-2][1]
             angle = atan2(dy, dx)
             poly, fill = _arrow_polygon(pts[-1][0], pts[-1][1], angle, e.target_style)
-            if fill == PORTION:
+            if fill == CIRCLE:
+                _svg_draw_circle(c, pts[-1][0], pts[-1][1], angle)
+            elif fill == PORTION:
                 _svg_draw_portion(c, pts[-1][0], pts[-1][1], angle)
             elif poly:
                 if fill == 'open':
@@ -321,7 +330,9 @@ def svg_draw_edge(c, e):
             dy = pts[1][1] - pts[0][1]
             angle = atan2(dy, dx)
             poly, fill = _arrow_polygon(pts[0][0], pts[0][1], angle + pi, e.source_style)
-            if fill == PORTION:
+            if fill == CIRCLE:
+                _svg_draw_circle(c, pts[0][0], pts[0][1], angle + pi)
+            elif fill == PORTION:
                 _svg_draw_portion(c, pts[0][0], pts[0][1], angle + pi)
             elif poly:
                 if fill == 'open':
@@ -386,7 +397,9 @@ def svg_draw_edge(c, e):
 
         angle = atan2(ty - sy, tx - sx)
         poly, fill = _arrow_polygon(tx, ty, angle, e.target_style)
-        if fill == PORTION:
+        if fill == CIRCLE:
+            _svg_draw_circle(c, tx, ty, angle)
+        elif fill == PORTION:
             _svg_draw_portion(c, tx, ty, angle)
         elif poly:
             color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
@@ -394,7 +407,9 @@ def svg_draw_edge(c, e):
         if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
             _svg_arrow_extras(c, tx, ty, angle, fill)
         poly, fill = _arrow_polygon(sx, sy, angle + pi, e.source_style)
-        if fill == PORTION:
+        if fill == CIRCLE:
+            _svg_draw_circle(c, sx, sy, angle + pi)
+        elif fill == PORTION:
             _svg_draw_portion(c, sx, sy, angle + pi)
         elif poly:
             color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill

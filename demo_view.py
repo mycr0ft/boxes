@@ -14,7 +14,7 @@ pkg = d.add_view('Powertrain', ['package'],
 vw = d.add_view('VehicleDynamics', ['view'])
 
 d.add_edge(ecu, sensor, source_style=FILLED, target_style=None, label='reads')
-d.add_edge(ecu, pkg, line_style=DASHED, target_style=None, label='in')
-d.add_edge(vw, sensor, line_style=DASHED, target_style=None, label='uses')
+d.contain(pkg, ecu, label='contains')
+d.contain(vw, sensor)
 
 print(d.render(routing='orthogonal', node_gap=20))
