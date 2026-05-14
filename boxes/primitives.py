@@ -41,8 +41,10 @@ ARROW_SIZE = 7
 
 def _arrow_backoff(style):
     """Pixels to shorten the edge line so it stops at the arrowhead base."""
-    if style is None or style == NONE or style == FILLED or style == CIRCLE:
+    if style is None or style == NONE or style == FILLED:
         return 0
+    if style == CIRCLE:
+        return max(3, round(ARROW_SIZE * 0.5))
     if style == DIAMOND:
         return round(ARROW_SIZE * 0.7 * 2)
     return ARROW_SIZE
@@ -141,19 +143,21 @@ def _draw_reference_subsetting(c, x, y, angle, size):
 
 def _draw_circle(c, x, y, angle, size):
     r = max(3, round(size * 0.5))
+    cx = round(x - cos(angle) * r)
+    cy = round(y - sin(angle) * r)
     for dy in range(-r, r + 1):
         for dx in range(-r, r + 1):
             d = round((dx*dx + dy*dy) ** 0.5)
             if d == r:
-                c.set(x + dx, y + dy)
+                c.set(cx + dx, cy + dy)
     h = r * 0.7
     for sign in (-1, 1):
         a = angle + sign * pi / 4
-        for px, py in line(x, y, x + cos(a) * h, y + sin(a) * h):
+        for px, py in line(cx, cy, cx + cos(a) * h, cy + sin(a) * h):
             c.set(px, py)
     for sign in (-1, 1):
         a = angle + sign * pi / 4 + pi
-        for px, py in line(x, y, x + cos(a) * h, y + sin(a) * h):
+        for px, py in line(cx, cy, cx + cos(a) * h, cy + sin(a) * h):
             c.set(px, py)
 
 

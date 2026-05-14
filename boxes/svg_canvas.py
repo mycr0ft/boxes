@@ -97,12 +97,14 @@ def _arrow_polygon(x, y, angle, style):
 
 def _svg_draw_circle(c, x, y, angle):
     r = max(3, ARROW_SIZE * 0.5)
-    c.add_circle(x, y, r, fill='none')
+    cx = x - cos(angle) * r
+    cy = y - sin(angle) * r
+    c.add_circle(cx, cy, r, fill='none')
     h = r * 0.7
     for sign in (-1, 1):
         a = angle + sign * pi / 4
-        c.add_line(x, y, x + cos(a) * h, y + sin(a) * h)
-        c.add_line(x, y, x + cos(a + pi) * h, y + sin(a + pi) * h)
+        c.add_line(cx, cy, cx + cos(a) * h, cy + sin(a) * h)
+        c.add_line(cx, cy, cx + cos(a + pi) * h, cy + sin(a + pi) * h)
 
 
 def _svg_draw_portion(c, x, y, angle):
