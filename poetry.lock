@@ -12,7 +12,26 @@ files = [
     {file = "drawille-0.2.0.tar.gz", hash = "sha256:815343e1162c58052d4cb652ef970f6771edd90042d549ecc6e453c9736aa1ad"},
 ]
 
+[[package]]
+name = "pyelk"
+version = "0.3.0"
+description = "Python port of elkjs - automatic graph layout based on ELK"
+optional = true
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "extra == \"pyelk\""
+files = [
+    {file = "pyelk-0.3.0-py3-none-any.whl", hash = "sha256:2f5b6a1f6392e3cd1cfbbdccdd896b3f36e503a6253a56e82bbf8f251f4a1fcf"},
+    {file = "pyelk-0.3.0.tar.gz", hash = "sha256:5df41a7867c0cbf766cc33670165615c90650c68b69e575dbe622718d00fc9da"},
+]
+
+[package.extras]
+dev = ["pytest (>=7.0)"]
+
+[extras]
+pyelk = ["pyelk"]
+
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "ff15af4734388277a006e9b1a7d9827d3442a375ae78862e26308004df003082"
+content-hash = "741ea9a670982dc027dc208a6f1a50110c12b575d5ab97178eda3cbd234b9f5d"

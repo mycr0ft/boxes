@@ -33,6 +33,7 @@ REDEFINITION = 'redefinition'
 REFERENCE_SUBSETTING = 'reference_subsetting'
 PORTION = 'portion'
 CIRCLE = 'circle'
+UNOWNED = 'unowned'
 SOLID = 'solid'
 DASHED = 'dashed'
 
@@ -43,11 +44,46 @@ def _arrow_backoff(style):
     """Pixels to shorten the edge line so it stops at the arrowhead base."""
     if style is None or style == NONE or style == FILLED:
         return 0
-    if style == CIRCLE:
-        return max(3, round(ARROW_SIZE * 0.5))
+    if style == CIRCLE or style == UNOWNED:
+        # The circle sits tangent to the node boundary (see _draw_circle),
+        # so the limb — not the centre — touches the border.  The edge line
+        # therefore should reach the boundary: no backoff is needed.
+        return 0
     if style == DIAMOND:
         return round(ARROW_SIZE * 0.7 * 2)
+    if style == PORTION:
+        return round(ARROW_SIZE * 0.6)
     return ARROW_SIZE
+
+
+def _node_outward_angle(tip_x, tip_y, node):
+    """Return the angle pointing INTO the nearest side of *node*.
+
+    The angle convention matches :func:`_draw_circle`: the centre is placed
+    at ``x - cos(angle)*r`` *away* from the angle, i.e. on the side opposite
+    to ``angle``.  By making ``angle`` point into the node, the resulting
+    centre sits outside the node — the whole circle is tangent to the
+    boundary and only the limb touches it, regardless of the edge's own
+    axis.  Crucial for orthogonal routes whose terminal segment runs
+    parallel to the boundary (degenerate case) where the edge axis would
+    otherwise push half the circle inside the node.
+    """
+    if node is None:
+        return None
+    nx1, ny1 = node.x, node.y
+    nx2, ny2 = node.x + node.w, node.y + node.h
+    d_top = abs(tip_y - ny1)
+    d_bottom = abs(tip_y - ny2)
+    d_left = abs(tip_x - nx1)
+    d_right = abs(tip_x - nx2)
+    min_d = min(d_top, d_bottom, d_left, d_right)
+    if min_d == d_top:
+        return pi / 2          # node is below the tip → centre offset upward (out)
+    if min_d == d_bottom:
+        return -pi / 2         # node is above the tip → centre offset downward
+    if min_d == d_left:
+        return 0.0             # node is right of the tip → centre offset leftward
+    return pi                  # node is left of the tip → centre offset rightward
 
 
 # ── arrowhead drawing ──
@@ -161,6 +197,18 @@ def _draw_circle(c, x, y, angle, size):
             c.set(px, py)
 
 
+def _draw_unowned(c, x, y, angle, size):
+    """Open circle (no cross) — unowned membership."""
+    r = max(3, round(size * 0.5))
+    cx = round(x - cos(angle) * r)
+    cy = round(y - sin(angle) * r)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            d = round((dx*dx + dy*dy) ** 0.5)
+            if d == r:
+                c.set(cx + dx, cy + dy)
+
+
 def _draw_portion(c, x, y, angle, size):
     r = round(size * 0.6)
     cx = round(x - cos(angle) * r)
@@ -186,6 +234,7 @@ _ARROW_DRAWERS = {
     REFERENCE_SUBSETTING: _draw_reference_subsetting,
     PORTION: _draw_portion,
     CIRCLE: _draw_circle,
+    UNOWNED: _draw_unowned,
 }
 
 
@@ -233,7 +282,8 @@ def draw_arrowhead(c, x, y, angle, style):
 
 # ── straight-line relation (one segment) ──
 
-def draw_relation(c, x1, y1, x2, y2, line_style=SOLID, source=None, target=None, label=None):
+def draw_relation(c, x1, y1, x2, y2, line_style=SOLID, source=None, target=None, label=None,
+                  source_node=None, target_node=None):
     """Draw a straight-line relation with optional arrowheads and label.
 
     Parameters
@@ -246,6 +296,10 @@ def draw_relation(c, x1, y1, x2, y2, line_style=SOLID, source=None, target=None,
         Arrowhead styles at each end.
     label : str or None
         Text placed perpendicular to the line at its midpoint.
+    source_node, target_node : Node or None
+        Source/target diagram nodes — used to place CIRCLE / UNOWNED
+        membership markers tangent to the node boundary so the entire
+        circle stays visible instead of being half-covered by the node.
     """
     sx, sy, tx, ty = x1, y1, x2, y2
     dx_total, dy_total = x2 - x1, y2 - y1
@@ -265,8 +319,20 @@ def draw_relation(c, x1, y1, x2, y2, line_style=SOLID, source=None, target=None,
 
     draw_line(c, sx, sy, tx, ty, line_style)
     angle = atan2(dy_total, dx_total)
-    draw_arrowhead(c, x2, y2, angle, target)
-    draw_arrowhead(c, x1, y1, angle + pi, source)
+    # Containment markers (CIRCLE / UNOWNED) sit tangent to the boundary;
+    # the rest of the arrowheads point along the edge axis.
+    target_angle = angle
+    source_angle = angle + pi
+    if target in (CIRCLE, UNOWNED):
+        node_angle = _node_outward_angle(x2, y2, target_node)
+        if node_angle is not None:
+            target_angle = node_angle
+    if source in (CIRCLE, UNOWNED):
+        node_angle = _node_outward_angle(x1, y1, source_node)
+        if node_angle is not None:
+            source_angle = node_angle
+    draw_arrowhead(c, x2, y2, target_angle, target)
+    draw_arrowhead(c, x1, y1, source_angle, source)
     if label:
         mx = (x1 + x2) // 2
         my = (y1 + y2) // 2
@@ -283,10 +349,14 @@ def draw_relation(c, x1, y1, x2, y2, line_style=SOLID, source=None, target=None,
 # ── multi-segment (orthogonal) polyline ──
 
 def draw_polyline(c, points, line_style=SOLID, source=None, target=None, label=None,
-                  used_labels=None):
+                  used_labels=None, keep_away=None, source_node=None, target_node=None):
     """Draw an orthogonal polyline through waypoints with arrowheads.
 
     used_labels : set of (x, y) tuples — occupied label positions to avoid.
+    keep_away  : set of (x, y) tuples — waypoints of other edges to avoid.
+    source_node, target_node : Node or None
+        Diagram nodes — used to place CIRCLE / UNOWNED membership markers
+        tangent to the node boundary so the entire circle stays visible.
     """
     pts = list(points)
 
@@ -319,13 +389,23 @@ def draw_polyline(c, points, line_style=SOLID, source=None, target=None, label=N
     if target and len(points) >= 2:
         dx = points[-1][0] - points[-2][0]
         dy = points[-1][1] - points[-2][1]
-        draw_arrowhead(c, points[-1][0], points[-1][1], atan2(dy, dx), target)
+        target_angle = atan2(dy, dx)
+        if target in (CIRCLE, UNOWNED):
+            node_angle = _node_outward_angle(points[-1][0], points[-1][1], target_node)
+            if node_angle is not None:
+                target_angle = node_angle
+        draw_arrowhead(c, points[-1][0], points[-1][1], target_angle, target)
 
     # source arrowhead on first segment
     if source and len(points) >= 2:
         dx = points[1][0] - points[0][0]
         dy = points[1][1] - points[0][1]
-        draw_arrowhead(c, points[0][0], points[0][1], atan2(dy, dx) + pi, source)
+        source_angle = atan2(dy, dx) + pi
+        if source in (CIRCLE, UNOWNED):
+            node_angle = _node_outward_angle(points[0][0], points[0][1], source_node)
+            if node_angle is not None:
+                source_angle = node_angle
+        draw_arrowhead(c, points[0][0], points[0][1], source_angle, source)
 
     # label at Manhattan midpoint
     if label and len(points) >= 2:
@@ -358,14 +438,18 @@ def draw_polyline(c, points, line_style=SOLID, source=None, target=None, label=N
 
         if label_pos:
             lx, ly = label_pos
+            keep_away = keep_away or set()
             # Collision avoidance: try offsets if position is taken
             if used_labels is not None:
                 offsets = [(0, 0), (0, 12), (12, 0), (0, -8), (-12, 0),
                            (0, 20), (20, 0), (-20, 0), (0, -16)]
                 for ox, oy in offsets:
                     pos = (lx + ox, ly + oy)
-                    if not any(abs(pos[0] - p[0]) < 10 and abs(pos[1] - p[1]) < 5
-                               for p in used_labels):
+                    label_coll = any(abs(pos[0] - p[0]) < 10 and abs(pos[1] - p[1]) < 5
+                                     for p in used_labels)
+                    path_coll = any(abs(pos[0] - p[0]) < 12 and abs(pos[1] - p[1]) < 12
+                                    for p in keep_away)
+                    if not label_coll and not path_coll:
                         lx, ly = pos
                         used_labels.add(pos)
                         break
@@ -460,7 +544,15 @@ def draw_comment_box(c, x1, y1, x2, y2, text):
 
 # ── view / package box (folder tab) ──
 
-def draw_view_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):
+def _draw_dashed_line(c, x1, y1, x2, y2):
+    """Draw a line skipping pixels — 5 on, 3 off."""
+    pts = list(line(x1, y1, x2, y2))
+    for i, (px, py) in enumerate(pts):
+        if i % 8 < 5:
+            c.set(px, py)
+
+
+def draw_view_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None, dashed=False):
     tw = []
     if stereotypes:
         tw.extend(len(f'\u00ab{s}\u00bb') for s in stereotypes)
@@ -470,12 +562,21 @@ def draw_view_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):
     n_lines = 1 + (len(stereotypes) if stereotypes else 0)
     tab_h = n_lines * 5 + 4
 
-    for rx, ry in line(x1, y2, x1, y1): c.set(rx, ry)
-    for rx, ry in line(x1, y1, x1 + tab_w, y1): c.set(rx, ry)
-    for rx, ry in line(x1 + tab_w, y1, x1 + tab_w, y1 + tab_h): c.set(rx, ry)
-    for rx, ry in line(x1 + tab_w, y1 + tab_h, x2, y1 + tab_h): c.set(rx, ry)
-    for rx, ry in line(x2, y1 + tab_h, x2, y2): c.set(rx, ry)
-    for rx, ry in line(x2, y2, x1, y2): c.set(rx, ry)
+    dl = _draw_dashed_line if dashed else None
+    if dashed:
+        _draw_dashed_line(c, x1, y2, x1, y1)
+        _draw_dashed_line(c, x1, y1, x1 + tab_w, y1)
+        _draw_dashed_line(c, x1 + tab_w, y1, x1 + tab_w, y1 + tab_h)
+        _draw_dashed_line(c, x1 + tab_w, y1 + tab_h, x2, y1 + tab_h)
+        _draw_dashed_line(c, x2, y1 + tab_h, x2, y2)
+        _draw_dashed_line(c, x2, y2, x1, y2)
+    else:
+        for rx, ry in line(x1, y2, x1, y1): c.set(rx, ry)
+        for rx, ry in line(x1, y1, x1 + tab_w, y1): c.set(rx, ry)
+        for rx, ry in line(x1 + tab_w, y1, x1 + tab_w, y1 + tab_h): c.set(rx, ry)
+        for rx, ry in line(x1 + tab_w, y1 + tab_h, x2, y1 + tab_h): c.set(rx, ry)
+        for rx, ry in line(x2, y1 + tab_h, x2, y2): c.set(rx, ry)
+        for rx, ry in line(x2, y2, x1, y2): c.set(rx, ry)
 
     lines = []
     if stereotypes:
@@ -496,9 +597,88 @@ def draw_view_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):
             c.set_text(text_x, y, attr)
 
 
+# ── arc helper for rounded corners ──
+
+ROUNDED_RADIUS = 5
+
+def _draw_arc(c, cx, cy, r, a1, a2, dashed=False):
+    """Draw a circular arc about (cx, cy) from angle a1 to a2."""
+    steps = max(2, round(r * pi / 2))
+    px_prev = round(cx + cos(a1) * r)
+    py_prev = round(cy + sin(a1) * r)
+    pixel_offset = 0
+    for i in range(1, steps + 1):
+        t = a1 + (a2 - a1) * i / steps
+        x = round(cx + cos(t) * r)
+        y = round(cy + sin(t) * r)
+        pts = list(line(px_prev, py_prev, x, y))
+        for j, (px, py) in enumerate(pts):
+            if not dashed or (pixel_offset + j) % 8 < 5:
+                c.set(px, py)
+        pixel_offset += len(pts)
+        px_prev, py_prev = x, y
+
+
+# ── activity node drawing ──
+
+def draw_start_node(c, cx, cy, r):
+    """Draw a filled circle — activity start node."""
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if round((dx*dx + dy*dy) ** 0.5) <= r:
+                c.set(cx + dx, cy + dy)
+
+
+def draw_done_node(c, cx, cy, r):
+    """Draw a bullseye (inset filled circle) — activity done node."""
+    inner_r = max(2, r // 2)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            d = round((dx*dx + dy*dy) ** 0.5)
+            if d == r or d <= inner_r:
+                c.set(cx + dx, cy + dy)
+
+
+def draw_terminate_node(c, cx, cy, r):
+    """Draw an open circle with an X through the center — terminate node."""
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            d = round((dx*dx + dy*dy) ** 0.5)
+            if d == r:
+                c.set(cx + dx, cy + dy)
+    h = r * 0.7
+    for sign in (-1, 1):
+        a = pi / 4 * sign
+        for px, py in line(cx, cy, cx + cos(a) * h, cy + sin(a) * h):
+            c.set(px, py)
+    for sign in (-1, 1):
+        a = pi + pi / 4 * sign
+        for px, py in line(cx, cy, cx + cos(a) * h, cy + sin(a) * h):
+            c.set(px, py)
+
+
+def draw_fork_join_node(c, x1, y1, x2, y2):
+    """Draw a filled synchronization bar — fork/join node."""
+    for dy in range(y1, y2 + 1):
+        for dx in range(x1, x2 + 1):
+            c.set(dx, dy)
+
+
+def draw_decision_node(c, cx, cy, size, name=''):
+    """Draw a diamond — decision/merge node."""
+    pts = [(cx, cy - size), (cx + size, cy), (cx, cy + size), (cx - size, cy)]
+    for i in range(4):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % 4]
+        for px, py in line(x1, y1, x2, y2):
+            c.set(px, py)
+    if name:
+        c.set_text(cx - len(name), cy - 2, name)
+
+
 # ── box ──
 
-def draw_class_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):
+def draw_class_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None, rounded=False, dashed=False):
     """Draw a rectangular classifier box with centered text.
 
     The box has four borders. Inside it renders (top to bottom):
@@ -516,11 +696,45 @@ def draw_class_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None):
         Primary label.
     stereotypes : list of str, optional
     attributes : list of str, optional
+    rounded : bool, optional
+        Draw rounded corners (e.g. SysMLv2 part usages).
+    dashed : bool, optional
+        Draw border with dashed lines.
     """
-    for rx, ry in line(x1, y1, x2, y1): c.set(rx, ry)
-    for rx, ry in line(x2, y1, x2, y2): c.set(rx, ry)
-    for rx, ry in line(x2, y2, x1, y2): c.set(rx, ry)
-    for rx, ry in line(x1, y2, x1, y1): c.set(rx, ry)
+    dl = _draw_dashed_line if dashed else None
+    if rounded:
+        r = min(ROUNDED_RADIUS, (x2 - x1) // 4, (y2 - y1) // 4)
+        if dashed:
+            _draw_dashed_line(c, x1 + r, y1, x2 - r, y1)
+        else:
+            for px, py in line(x1 + r, y1, x2 - r, y1): c.set(px, py)
+        _draw_arc(c, x2 - r, y1 + r, r, -pi / 2, 0, dashed)
+        if dashed:
+            _draw_dashed_line(c, x2, y1 + r, x2, y2 - r)
+        else:
+            for px, py in line(x2, y1 + r, x2, y2 - r): c.set(px, py)
+        _draw_arc(c, x2 - r, y2 - r, r, 0, pi / 2, dashed)
+        if dashed:
+            _draw_dashed_line(c, x2 - r, y2, x1 + r, y2)
+        else:
+            for px, py in line(x2 - r, y2, x1 + r, y2): c.set(px, py)
+        _draw_arc(c, x1 + r, y2 - r, r, pi / 2, pi, dashed)
+        if dashed:
+            _draw_dashed_line(c, x1, y1 + r, x1, y2 - r)
+        else:
+            for px, py in line(x1, y1 + r, x1, y2 - r): c.set(px, py)
+        _draw_arc(c, x1 + r, y1 + r, r, pi, 3 * pi / 2, dashed)
+    else:
+        if dashed:
+            _draw_dashed_line(c, x1, y1, x2, y1)
+            _draw_dashed_line(c, x2, y1, x2, y2)
+            _draw_dashed_line(c, x2, y2, x1, y2)
+            _draw_dashed_line(c, x1, y2, x1, y1)
+        else:
+            for rx, ry in line(x1, y1, x2, y1): c.set(rx, ry)
+            for rx, ry in line(x2, y1, x2, y2): c.set(rx, ry)
+            for rx, ry in line(x2, y2, x1, y2): c.set(rx, ry)
+            for rx, ry in line(x1, y2, x1, y1): c.set(rx, ry)
     box_cx = (x1 + x2) // 2
     lines = []
     if stereotypes:

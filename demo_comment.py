@@ -19,4 +19,4 @@ d.add_edge(ecu, actuator, source_style=FILLED, target_style=None, label='command
 d.add_edge(note, ecu, line_style=DASHED, target_style=None)
 d.add_edge(note2, sensor, line_style=DASHED, target_style=None)
 
-print(d.render(routing='orthogonal', node_gap=20))
+print(d.render(routing='elkjs', node_gap=20))

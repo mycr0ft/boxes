@@ -265,10 +265,10 @@ with open('/tmp/diagram.svg', 'w') as f:
 
 ## Routing Engines
 
-boxes provides four routing engines, selectable via the `routing` parameter:
+boxes provides five routing engines, selectable via the `routing` parameter:
 
 ```python
-d.render(routing='orthogonal')    # or 'straight', 'sugiyama', 'elk'
+d.render(routing='orthogonal')    # or 'straight', 'sugiyama', 'elk', 'pyelk'
 d.render_svg(routing='sugiyama')
 ```
 
@@ -359,6 +359,38 @@ node --version  # v16+
 Best for: production-quality layouts, large diagrams (30+ nodes),
 when visual polish matters more than startup time (~500 ms subprocess
 spawn overhead).
+
+### `pyelk` (pure-Python ELK port)
+
+**File:** `pyelk_layout.py` (thin wrapper over `elk.py`'s JSON conversion)
+
+Bridges to the Eclipse Layout Kernel via [pyelk](https://github.com/depetrol/pyelk),
+a young but interesting pure-Python port of elkjs.  Where the `elk` engine
+shells out to Node.js, `pyelk` runs the layout in-process — **no Node.js,
+no JVM, no subprocess** — which makes it a natural fit for a pythonic project
+like boxes.  Because pyelk speaks the same ELK JSON format as elkjs, this
+engine reuses the exact same `to_elk_json()` / `apply_elk_result()` pipeline
+as `elk`; only the layout backend is swapped.
+
+**Requirements:**
+```bash
+pip install pyelk        # or: poetry install --extras pyelk
+```
+
+**Usage:**
+```python
+d.render(routing='pyelk')          # terminal output
+d.render_svg(routing='pyelk')      # SVG output
+```
+
+Best for: getting ELK-quality layouts without a Node.js runtime, and for
+pure-Python environments where spawning a subprocess is undesirable.
+
+> **Maturity note:** pyelk is a young project (released Feb 2026, ~5 commits,
+> alpha) — an ambitious pure-Python reimplementation of elkjs rather than a
+> battle-tested port.  It's worth trying for the zero-runtime ergonomics, but
+> verify its output against `elk` (elkjs) on non-trivial graphs, and fall back
+> to `elk` or `sugiyama` if you hit layout-quality or option-coverage gaps.
 
 ---
 
@@ -452,7 +484,7 @@ from boxes import (
     # Core classes
     Diagram, Node, Edge, Port,
     # Routing engines
-    sugiyama_layout, layout_with_elk,
+    sugiyama_layout, layout_with_elk, layout_with_pyelk,
     # SVG renderer
     SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port,
 )
@@ -536,11 +568,12 @@ from boxes import (
      │ braille chars    │                 │   XML elements   │
      └─────────────────┘                 └──────────────────┘
 
-     Routing engines (all feed into Diagram):
-       layout._route_orthogonal()   — homegrown 3-segment
-       layout._route_straight()     — center-to-center
-       sugiyama.sugiyama_layout()   — 5-stage Sugiyama
-       elk.layout_with_elk()        — ELKjs subprocess
+      Routing engines (all feed into Diagram):
+        layout._route_orthogonal()   — homegrown 3-segment
+        layout._route_straight()     — center-to-center
+        sugiyama.sugiyama_layout()   — 5-stage Sugiyama
+        elk.layout_with_elk()        — ELKjs subprocess (Node.js)
+        pyelk_layout.layout_with_pyelk() — pyelk (pure-Python ELK port)
 ```
 
 ---

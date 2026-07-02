@@ -1,12 +1,15 @@
 """Diagram layout engine — Node, Edge, Port, Diagram classes with routing.
 
 This module provides the core data model (``Node``, ``Edge``, ``Port``,
-``Diagram``) and three routing strategies:
+``Diagram``) and routing strategies selectable via ``layout(routing=...)``:
 
 - **straight**    — ``_route_straight()`` center-to-center lines
 - **orthogonal**  — ``_route_orthogonal()`` homegrown 3-segment Manhattan
                    with obstacle avoidance and edge-edge spacing
 - **sugiyama**    — delegates to ``sugiyama.sugiyama_layout()``
+- **elk**         — delegates to ``elk.layout_with_elk()`` (Node.js + elkjs)
+- **pyelk**       — delegates to ``pyelk_layout.layout_with_pyelk()``
+                   (pure-Python, ``pip install pyelk``)
 
 Port sub-routing (``_port_route``) handles Z-shaped (3-segment) paths between
 explicit ``source_port``/``target_port`` on edges.
@@ -16,17 +19,21 @@ After calling ``layout()``, the diagram is ready for rendering via
 
 See also
 --------
-sugiyama.py  : pure-Python Sugiyama pipeline
-elk.py       : ELKjs subprocess integration
-primitives.py: drawille-based terminal drawing
-svg_canvas.py: SVG vector drawing
+sugiyama.py      : pure-Python Sugiyama pipeline
+elk.py           : ELKjs subprocess integration (Node.js)
+pyelk_layout.py  : pyelk integration (pure-Python ELK port)
+primitives.py    : drawille-based terminal drawing
+svg_canvas.py    : SVG vector drawing
 """
 
 from drawille import Canvas
 from boxes.primitives import draw_polyline, draw_relation, draw_class_box, draw_port_box, \
-    draw_comment_box, draw_view_box, \
-    SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, CIRCLE, PORT_W, PORT_H
-from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port, svg_draw_comment, svg_draw_view
+    draw_comment_box, draw_view_box, draw_start_node, draw_done_node, draw_terminate_node, \
+    draw_fork_join_node, draw_decision_node, \
+    SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, CIRCLE, UNOWNED, PORT_W, PORT_H
+from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port, svg_draw_comment, svg_draw_view, \
+    svg_draw_start_node, svg_draw_done_node, svg_draw_terminate_node, \
+    svg_draw_fork_join_node, svg_draw_decision_node
 
 _MIN_PORT_SPACING = 8
 from collections import defaultdict
@@ -130,10 +137,12 @@ class Node:
     Port : Attachable boundary ports.
     """
 
-    def __init__(self, name, stereotypes=None, attributes=None):
+    def __init__(self, name, stereotypes=None, attributes=None, rounded=False, dashed=False):
         self.name = name
         self.stereotypes = stereotypes or []
         self.attributes = attributes or []
+        self.rounded = rounded
+        self.dashed = dashed
         self.ports = []
         self.x = self.y = self.w = self.h = 0
         self._calc_size()
@@ -207,44 +216,24 @@ class Comment:
         return (self.x, self.y, self.x + self.w, self.y + self.h)
 
 
-class View:
-    """A view / package node with a folder-tab label area.
+_ACTIVITY_RADIUS = 8
 
-    Views are drawn as a rectangle with a "tab" at the top-left corner
-    containing the name (and optional stereotypes).  Attributes appear
-    in the main content area below a separator.  This matches the UML
-    ``«package»`` and SysML ``«view»`` notation.
+
+class StartNode:
+    """Activity start node — filled circle.
 
     Parameters
     ----------
     name : str
-        Primary label shown in the tab.
-    stereotypes : list of str, optional
-        Stereotype labels (e.g. ``['view']``, ``['package']``).
-    attributes : list of str, optional
-        Attribute/method lines shown below a separator.
+        Optional label (defaults to 'Start').
     """
 
-    def __init__(self, name, stereotypes=None, attributes=None):
+    def __init__(self, name='Start'):
         self.name = name
-        self.stereotypes = stereotypes or []
-        self.attributes = attributes or []
-        self.x = self.y = self.w = self.h = 0
-        self._calc_size()
-
-    def _calc_size(self):
-        tw = []
-        if self.stereotypes:
-            tw.extend(len(f'\u00ab{s}\u00bb') for s in self.stereotypes)
-        tw.append(len(self.name))
-        if self.attributes:
-            tw.extend(len(a) for a in self.attributes)
-        max_tw = max(tw) if tw else 0
-        self.w = max(max_tw * 2 + 6, 26)
-        tab_lines = 1 + len(self.stereotypes)
-        tab_h = tab_lines * 5 + 4
-        attr_h = (1 + len(self.attributes)) * 5 if self.attributes else 0
-        self.h = tab_h + attr_h + 6
+        self.r = _ACTIVITY_RADIUS
+        d = self.r * 2 + 2
+        self.w = self.h = d
+        self.x = self.y = 0
 
     @property
     def cx(self):
@@ -257,8 +246,203 @@ class View:
     def box(self):
         return (self.x, self.y, self.x + self.w, self.y + self.h)
 
+
+class DoneNode:
+    """Activity done / accept node — bullseye (inset filled circle).
+
+    Parameters
+    ----------
+    name : str
+        Optional label (defaults to 'Done').
+    """
+
+    def __init__(self, name='Done'):
+        self.name = name
+        self.r = _ACTIVITY_RADIUS
+        d = self.r * 2 + 2
+        self.w = self.h = d
+        self.x = self.y = 0
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+
+class TerminateNode:
+    """Activity terminate node — open circle with an X through the center.
+
+    Parameters
+    ----------
+    name : str
+        Optional label (defaults to 'Terminate').
+    """
+
+    def __init__(self, name='Terminate'):
+        self.name = name
+        self.r = _ACTIVITY_RADIUS
+        d = self.r * 2 + 2
+        self.w = self.h = d
+        self.x = self.y = 0
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+
+class ForkJoinNode:
+    """Activity fork / join node — a thick synchronization bar.
+
+    Parameters
+    ----------
+    name : str
+        Optional label.
+    w : int
+        Width of the bar (default 36).
+    h : int
+        Height of the bar (default 8).
+    """
+
+    def __init__(self, name='', w=36, h=8):
+        self.name = name
+        self.w = w
+        self.h = h
+        self.x = self.y = 0
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+
+class DecisionNode:
+    """Activity decision / merge node — a diamond shape.
+
+    Parameters
+    ----------
+    name : str
+        Optional label shown inside the diamond.
+    """
+
+    def __init__(self, name='', size=28):
+        self.name = name
+        self.size = size
+        self.w = size
+        self.h = size
+        self.x = self.y = 0
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+
+class View:
+    """A view / package node with a folder-tab label area.
+
+    Views are drawn as a rectangle with a "tab" at the top-left corner
+    containing the name (and optional stereotypes).  Attributes appear
+    in the main content area below a separator.  This matches the UML
+    ``«package»`` and SysML ``«view»`` notation.
+
+    Views can also contain child nodes, which are drawn inside the
+    content area (below the tab) rather than as top-level elements.
+
+    Parameters
+    ----------
+    name : str
+        Primary label shown in the tab.
+    stereotypes : list of str, optional
+        Stereotype labels (e.g. ``['view']``, ``['package']``).
+    attributes : list of str, optional
+        Attribute/method lines shown below a separator.
+    """
+
+    def __init__(self, name, stereotypes=None, attributes=None, dashed=False):
+        self.name = name
+        self.stereotypes = stereotypes or []
+        self.attributes = attributes or []
+        self.children = []
+        self.dashed = dashed
+        self.x = self.y = self.w = self.h = 0
+        self._calc_size()
+
+    def _tab_height(self):
+        return (1 + len(self.stereotypes)) * 5 + 4
+
+    def _calc_size(self):
+        tw = []
+        if self.stereotypes:
+            tw.extend(len(f'\u00ab{s}\u00bb') for s in self.stereotypes)
+        tw.append(len(self.name))
+        if self.attributes:
+            tw.extend(len(a) for a in self.attributes)
+        max_tw = max(tw) if tw else 0
+        tab_h = self._tab_height()
+        attr_h = (1 + len(self.attributes)) * 5 if self.attributes else 0
+        if self.children:
+            pad = 8
+            child_gap = 4
+            max_child_w = max(n.w for n in self.children)
+            total_child_h = sum(n.h for n in self.children) + child_gap * (len(self.children) - 1)
+            self.w = max(max_tw * 2 + 6, max_child_w + pad * 2, 26)
+            self.h = tab_h + 2 + attr_h + total_child_h + pad * 2
+        else:
+            self.w = max(max_tw * 2 + 6, 26)
+            self.h = tab_h + attr_h + 6
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    @property
+    def content_y(self):
+        """Y-coordinate where the content / children area starts."""
+        return self.y + self._tab_height() + 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
     def add_attribute(self, text):
         self.attributes.append(text)
+        self._calc_size()
+
+    def add_child(self, node):
+        """Add a node as a child rendered inside this view/package.
+
+        Child nodes are positioned inside the content area of the view
+        during layout and are not drawn as top-level boxes.
+        """
+        self.children.append(node)
         self._calc_size()
 
 
@@ -308,6 +492,9 @@ class Edge:
         self.waypoints = list(points)
 
 
+_SPECIAL_TYPES = (Comment, View, StartNode, DoneNode, TerminateNode, ForkJoinNode, DecisionNode)
+
+
 class Diagram:
     """Top-level container for nodes, edges, and layout configuration.
 
@@ -337,9 +524,10 @@ class Diagram:
         self.nodes = []
         self.comments = []
         self.views = []
+        self.activities = []
         self.edges = []
 
-    def add_node(self, name, stereotypes=None, attributes=None):
+    def add_node(self, name, stereotypes=None, attributes=None, rounded=False, dashed=False):
         """Create a new node and register it with the diagram.
 
         Parameters
@@ -350,13 +538,17 @@ class Diagram:
             Stereotype labels (e.g. ``['block']``, ``['part']``).
         attributes : list of str, optional
             Attribute lines shown below a separator.
+        rounded : bool, optional
+            If True, draw with rounded corners (e.g. SysMLv2 part usages).
+        dashed : bool, optional
+            If True, draw border with dashed lines (e.g. occurrence refs).
 
         Returns
         -------
         Node
             The newly created node.
         """
-        n = Node(name, stereotypes, attributes)
+        n = Node(name, stereotypes, attributes, rounded, dashed)
         self.nodes.append(n)
         return n
 
@@ -380,7 +572,7 @@ class Diagram:
         self.comments.append(c)
         return c
 
-    def add_view(self, name, stereotypes=None, attributes=None):
+    def add_view(self, name, stereotypes=None, attributes=None, dashed=False):
         """Create a view / package node and register it with the diagram.
 
         Views are drawn as rectangles with a folder-tab containing the
@@ -395,14 +587,140 @@ class Diagram:
             Stereotype labels (e.g. ``['view']``, ``['package']``).
         attributes : list of str, optional
             Attribute/method lines shown below a separator.
+        dashed : bool, optional
+            If True, the border is drawn dashed (for imported packages).
 
         Returns
         -------
         View
         """
-        v = View(name, stereotypes, attributes)
+        v = View(name, stereotypes, attributes, dashed)
         self.views.append(v)
         return v
+
+    def add_start(self, name='Start'):
+        """Add an activity start node (filled circle).
+
+        Parameters
+        ----------
+        name : str
+            Optional label.
+
+        Returns
+        -------
+        StartNode
+        """
+        n = StartNode(name)
+        self.activities.append(n)
+        return n
+
+    def add_done(self, name='Done'):
+        """Add an activity done / accept node (bullseye).
+
+        Parameters
+        ----------
+        name : str
+            Optional label.
+
+        Returns
+        -------
+        DoneNode
+        """
+        n = DoneNode(name)
+        self.activities.append(n)
+        return n
+
+    def add_terminate(self, name='Terminate'):
+        """Add an activity terminate node (circle with X).
+
+        Parameters
+        ----------
+        name : str
+            Optional label.
+
+        Returns
+        -------
+        TerminateNode
+        """
+        n = TerminateNode(name)
+        self.activities.append(n)
+        return n
+
+    def add_fork(self, name='', w=36, h=8):
+        """Add an activity fork node (synchronization bar).
+
+        Parameters
+        ----------
+        name : str
+            Optional label.
+        w, h : int
+            Bar dimensions.
+
+        Returns
+        -------
+        ForkJoinNode
+        """
+        n = ForkJoinNode(name, w, h)
+        self.activities.append(n)
+        return n
+
+    def add_join(self, name='', w=36, h=8):
+        """Add an activity join node (synchronization bar).
+
+        Same visual as fork — a thick bar.
+
+        Parameters
+        ----------
+        name : str
+            Optional label.
+        w, h : int
+            Bar dimensions.
+
+        Returns
+        -------
+        ForkJoinNode
+        """
+        n = ForkJoinNode(name, w, h)
+        self.activities.append(n)
+        return n
+
+    def add_decision(self, name='', size=28):
+        """Add an activity decision node (diamond).
+
+        Parameters
+        ----------
+        name : str
+            Optional label shown inside the diamond.
+        size : int
+            Width/height of the diamond bounding box.
+
+        Returns
+        -------
+        DecisionNode
+        """
+        n = DecisionNode(name, size)
+        self.activities.append(n)
+        return n
+
+    def add_merge(self, name='', size=28):
+        """Add an activity merge node (diamond).
+
+        Same visual as decision — a diamond shape.
+
+        Parameters
+        ----------
+        name : str
+            Optional label shown inside the diamond.
+        size : int
+            Width/height of the diamond bounding box.
+
+        Returns
+        -------
+        DecisionNode
+        """
+        n = DecisionNode(name, size)
+        self.activities.append(n)
+        return n
 
     def _update_port_positions(self):
         for n in self.nodes:
@@ -518,6 +836,29 @@ class Diagram:
         kw.setdefault('target_style', NONE)
         return self.add_edge(container, element, **kw)
 
+    def uncontain(self, container, element, **kw):
+        """Convenience: unowned-membership edge (open circle at container end).
+
+        In SysML, unowned membership is shown with an open circle (no cross)
+        at the container end, indicating membership without ownership.
+
+        Parameters
+        ----------
+        container : Node or View
+            The owning namespace / container.
+        element : Node
+            The contained element.
+        **kw
+            Passed through to ``add_edge``.
+
+        Returns
+        -------
+        Edge
+        """
+        kw.setdefault('source_style', UNOWNED)
+        kw.setdefault('target_style', NONE)
+        return self.add_edge(container, element, **kw)
+
     def generalize(self, child, parent, **kw):
         """Convenience: UML generalization / inheritance (open triangle at parent).
 
@@ -535,16 +876,27 @@ class Diagram:
         kw.setdefault('target_style', TRIANGLE)
         return self.add_edge(child, parent, **kw)
 
+    def _child_nodes(self):
+        """Return set of all nodes that are children of a View."""
+        children = set()
+        for v in self.views:
+            children.update(v.children)
+        return children
+
     def _assign_layers(self):
-        incoming = {n: set() for n in self.nodes}
+        child_nodes = self._child_nodes()
+        eligible = [n for n in self.nodes if n not in child_nodes] + self.activities
+        incoming = {n: set() for n in eligible}
         for e in self.edges:
             if isinstance(e.source, (Comment, View)) or isinstance(e.target, (Comment, View)):
                 continue
+            if e.source in child_nodes or e.target in child_nodes:
+                continue
             incoming[e.target].add(e.source)
 
-        roots = [n for n in self.nodes if not incoming[n]]
-        if not roots and self.nodes:
-            roots = [self.nodes[0]]
+        roots = [n for n in eligible if not incoming[n]]
+        if not roots and eligible:
+            roots = [eligible[0]]
 
         layer_of = {}
         queue = [(n, 0) for n in roots]
@@ -555,10 +907,12 @@ class Diagram:
             for e in self.edges:
                 if isinstance(e.target, (Comment, View)):
                     continue
+                if e.target in child_nodes or e.source in child_nodes:
+                    continue
                 if e.source == n:
                     queue.append((e.target, l + 1))
 
-        for n in self.nodes:
+        for n in eligible:
             if n not in layer_of:
                 layer_of[n] = 0
 
@@ -618,6 +972,27 @@ class Diagram:
 
     def _get_port(self, node, edge, is_source, layer_of):
         """Compute a distributed port position for an edge on a node."""
+        if isinstance(node, DecisionNode):
+            half = node.size // 2
+            if is_source:
+                target = edge.target
+                dx = target.cx - node.cx
+                dy = target.cy - node.cy
+            else:
+                source = edge.source
+                dx = source.cx - node.cx
+                dy = source.cy - node.cy
+            if abs(dx) > half and abs(dx) > abs(dy) * 0.5:
+                if dx >= 0:
+                    return (node.cx + half, node.cy)  # right tip
+                else:
+                    return (node.cx - half, node.cy)  # left tip
+            else:
+                if dy >= 0:
+                    return (node.cx, node.cy + half)  # bottom tip
+                else:
+                    return (node.cx, node.cy - half)  # top tip
+
         tl = layer_of.get(edge.target)
         sl = layer_of.get(edge.source)
         if is_source:
@@ -792,15 +1167,19 @@ class Diagram:
 
     # ── special-node edge routing (Comment / View) ──
 
-    def _route_special_edge(self, e):
-        special = e.source if isinstance(e.source, (Comment, View)) else e.target
-        other = e.target if isinstance(e.source, (Comment, View)) else e.source
-        is_source_special = isinstance(e.source, (Comment, View))
+    def _route_special_edge(self, e, orthogonal=False):
+        special = e.source if isinstance(e.source, _SPECIAL_TYPES) else e.target
+        other = e.target if isinstance(e.source, _SPECIAL_TYPES) else e.source
+        is_source_special = isinstance(e.source, _SPECIAL_TYPES)
 
         dx = other.cx - special.cx
         dy = other.cy - special.cy
+        dist = max(1, (dx * dx + dy * dy) ** 0.5)
 
-        if abs(dx) >= abs(dy):
+        if hasattr(special, 'r'):
+            sx = round(special.cx + dx / dist * special.r)
+            sy = round(special.cy + dy / dist * special.r)
+        elif abs(dx) >= abs(dy):
             if dx >= 0:
                 sx, sy = special.x + special.w, special.cy
             else:
@@ -811,7 +1190,10 @@ class Diagram:
             else:
                 sx, sy = special.cx, special.y
 
-        if abs(dx) >= abs(dy):
+        if hasattr(other, 'r'):
+            nx = round(other.cx - dx / dist * other.r)
+            ny = round(other.cy - dy / dist * other.r)
+        elif abs(dx) >= abs(dy):
             if dx >= 0:
                 nx, ny = other.x, other.cy
             else:
@@ -822,10 +1204,22 @@ class Diagram:
             else:
                 nx, ny = other.cx, other.y + other.h
 
-        if is_source_special:
-            e.route((sx, sy), (nx, ny))
+        if orthogonal:
+            if abs(dx) >= abs(dy):
+                mid_y = (sy + ny) // 2
+                pts = [(sx, sy), (sx, mid_y), (nx, mid_y), (nx, ny)]
+            else:
+                mid_x = (sx + nx) // 2
+                pts = [(sx, sy), (mid_x, sy), (mid_x, ny), (nx, ny)]
+            if is_source_special:
+                e.route(*pts)
+            else:
+                e.route(*reversed(pts))
         else:
-            e.route((nx, ny), (sx, sy))
+            if is_source_special:
+                e.route((sx, sy), (nx, ny))
+            else:
+                e.route((nx, ny), (sx, sy))
 
     # ── Sugiyama routing ──
 
@@ -868,8 +1262,10 @@ class Diagram:
 
         Parameters
         ----------
-        routing : {'straight', 'orthogonal', 'sugiyama'}
-            Routing engine to use.
+        routing : {'straight', 'orthogonal', 'sugiyama', 'elk', 'pyelk'}
+            Routing engine to use.  ``'elk'`` requires Node.js + elkjs
+            (``npm install elkjs``); ``'pyelk'`` requires the pure-Python
+            ``pyelk`` package (``pip install pyelk``).
         layer_gap : int
             Vertical gap between layers (pixels).
         node_gap : int
@@ -881,6 +1277,18 @@ class Diagram:
 
         if routing == 'sugiyama':
             self._route_sugiyama(node_gap, margin)
+            self._update_port_positions()
+            return
+
+        if routing == 'elk':
+            from boxes.elk import layout_with_elk
+            layout_with_elk(self)
+            self._update_port_positions()
+            return
+
+        if routing == 'pyelk':
+            from boxes.pyelk_layout import layout_with_pyelk
+            layout_with_pyelk(self)
             self._update_port_positions()
             return
 
@@ -898,10 +1306,12 @@ class Diagram:
 
         self._update_port_positions()
 
-        # Place comments and views below the last layer of nodes
+        # Place extras (comments, views) below the last layer
+        child_nodes = self._child_nodes()
         extras = self.comments + self.views
         if extras:
-            max_y = max((n.y + n.h for n in self.nodes), default=y)
+            eligible = [n for n in self.nodes if n not in child_nodes]
+            max_y = max((n.y + n.h for n in eligible), default=y)
             gap = layer_gap
             x = margin
             for item in extras:
@@ -909,10 +1319,20 @@ class Diagram:
                 item.y = max_y + gap
                 x += item.w + node_gap
 
+        # Position children inside their parent views
+        for v in self.views:
+            if v.children:
+                cy = v.content_y + 8
+                for child in v.children:
+                    cx = v.x + (v.w - child.w) // 2
+                    child.x = cx
+                    child.y = cy
+                    cy += child.h + 4
+
         gap_used = {}
         for e in self.edges:
             if isinstance(e.source, (Comment, View)) or isinstance(e.target, (Comment, View)):
-                self._route_special_edge(e)
+                self._route_special_edge(e, orthogonal=(routing == 'orthogonal'))
             elif routing == 'orthogonal':
                 self._route_orthogonal(e, layer_of, layers, gap_used)
             else:
@@ -924,28 +1344,79 @@ class Diagram:
         self.layout(routing=routing, layer_gap=layer_gap, node_gap=node_gap, margin=margin)
         self._update_port_positions()
         used_labels = set()
+        all_path_px = set()
         for e in self.edges:
+            pts = e.waypoints
+            for i in range(len(pts) - 1):
+                x1, y1 = pts[i]
+                x2, y2 = pts[i + 1]
+                if x1 == x2:
+                    lo, hi = (y1, y2) if y1 < y2 else (y2, y1)
+                    for y in range(lo, hi + 1, 4):
+                        all_path_px.add((x1, y))
+                else:
+                    lo, hi = (x1, x2) if x1 < x2 else (x2, x1)
+                    for x in range(lo, hi + 1, 4):
+                        all_path_px.add((x, y1))
+        for e in self.edges:
+            own = set(e.waypoints)
+            for i in range(len(e.waypoints) - 1):
+                x1, y1 = e.waypoints[i]
+                x2, y2 = e.waypoints[i + 1]
+                if x1 == x2:
+                    lo, hi = (y1, y2) if y1 < y2 else (y2, y1)
+                    for y in range(lo, hi + 1, 4):
+                        own.add((x1, y))
+                else:
+                    lo, hi = (x1, x2) if x1 < x2 else (x2, x1)
+                    for x in range(lo, hi + 1, 4):
+                        own.add((x, y1))
+            keep_away = all_path_px - own
             if len(e.waypoints) >= 2:
                 draw_polyline(c, e.waypoints,
                               line_style=e.line_style,
                               source=e.source_style,
                               target=e.target_style,
                               label=e.label,
-                              used_labels=used_labels)
+                              used_labels=used_labels,
+                              keep_away=keep_away,
+                              source_node=e.source,
+                              target_node=e.target)
             else:
                 draw_relation(c, e.source.cx, e.source.cy, e.target.cx, e.target.cy,
                               line_style=e.line_style,
                               source=e.source_style,
                               target=e.target_style,
-                              label=e.label)
+                              label=e.label,
+                              source_node=e.source,
+                              target_node=e.target)
+        child_nodes = self._child_nodes()
         for n in self.nodes:
-            draw_class_box(c, n.x, n.y, n.x + n.w, n.y + n.h, n.name, n.stereotypes, n.attributes)
+            if n in child_nodes:
+                continue
+            draw_class_box(c, n.x, n.y, n.x + n.w, n.y + n.h, n.name, n.stereotypes, n.attributes, rounded=n.rounded, dashed=n.dashed)
             for p in n.ports:
                 draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
         for com in self.comments:
             draw_comment_box(c, com.x, com.y, com.x + com.w, com.y + com.h, com.text)
         for v in self.views:
-            draw_view_box(c, v.x, v.y, v.x + v.w, v.y + v.h, v.name, v.stereotypes, v.attributes)
+            draw_view_box(c, v.x, v.y, v.x + v.w, v.y + v.h, v.name, v.stereotypes, v.attributes, dashed=v.dashed)
+            for child in v.children:
+                draw_class_box(c, child.x, child.y, child.x + child.w, child.y + child.h,
+                               child.name, child.stereotypes, child.attributes, rounded=child.rounded, dashed=child.dashed)
+                for p in child.ports:
+                    draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
+        for a in self.activities:
+            if isinstance(a, StartNode):
+                draw_start_node(c, a.cx, a.cy, a.r)
+            elif isinstance(a, DoneNode):
+                draw_done_node(c, a.cx, a.cy, a.r)
+            elif isinstance(a, TerminateNode):
+                draw_terminate_node(c, a.cx, a.cy, a.r)
+            elif isinstance(a, ForkJoinNode):
+                draw_fork_join_node(c, a.x, a.y, a.x + a.w, a.y + a.h)
+            elif isinstance(a, DecisionNode):
+                draw_decision_node(c, a.cx, a.cy, a.size // 2, a.name)
         return c.frame()
 
     def render_svg(self, routing='orthogonal', layer_gap=50, node_gap=12, margin=8, scale=1.5):
@@ -967,6 +1438,9 @@ class Diagram:
         for v in self.views:
             xs.extend([v.x, v.x + v.w])
             ys.extend([v.y, v.y + v.h])
+        for a in self.activities:
+            xs.extend([a.x, a.x + a.w])
+            ys.extend([a.y, a.y + a.h])
         for e in self.edges:
             for px, py in e.waypoints:
                 xs.append(px)
@@ -979,9 +1453,41 @@ class Diagram:
         h = int((max_y - min_y + pad * 2) * scale)
 
         c = SvgCanvas(scale=scale)
+
+        # Build keep-away sets for label collision avoidance
+        all_path_px = set()
         for e in self.edges:
-            svg_draw_edge(c, e)
+            pts = e.waypoints
+            for i in range(len(pts) - 1):
+                x1, y1 = pts[i]
+                x2, y2 = pts[i + 1]
+                if x1 == x2:
+                    lo, hi = (y1, y2) if y1 < y2 else (y2, y1)
+                    for y in range(lo, hi + 1, 4):
+                        all_path_px.add((x1, y))
+                else:
+                    lo, hi = (x1, x2) if x1 < x2 else (x2, x1)
+                    for x in range(lo, hi + 1, 4):
+                        all_path_px.add((x, y1))
+
+        for e in self.edges:
+            own = set(e.waypoints)
+            for i in range(len(e.waypoints) - 1):
+                x1, y1 = e.waypoints[i]
+                x2, y2 = e.waypoints[i + 1]
+                if x1 == x2:
+                    lo, hi = (y1, y2) if y1 < y2 else (y2, y1)
+                    for y in range(lo, hi + 1, 4):
+                        own.add((x1, y))
+                else:
+                    lo, hi = (x1, x2) if x1 < x2 else (x2, x1)
+                    for x in range(lo, hi + 1, 4):
+                        own.add((x, y1))
+            keep_away = all_path_px - own
+        child_nodes = self._child_nodes()
         for n in self.nodes:
+            if n in child_nodes:
+                continue
             svg_draw_node(c, n)
             for p in n.ports:
                 svg_draw_port(c, p)
@@ -989,4 +1495,21 @@ class Diagram:
             svg_draw_comment(c, com)
         for v in self.views:
             svg_draw_view(c, v)
+            for child in v.children:
+                svg_draw_node(c, child)
+                for p in child.ports:
+                    svg_draw_port(c, p)
+        for e in self.edges:
+            svg_draw_edge(c, e, keep_away=all_path_px - set(e.waypoints))
+        for a in self.activities:
+            if isinstance(a, StartNode):
+                svg_draw_start_node(c, a.cx, a.cy, a.r)
+            elif isinstance(a, DoneNode):
+                svg_draw_done_node(c, a.cx, a.cy, a.r)
+            elif isinstance(a, TerminateNode):
+                svg_draw_terminate_node(c, a.cx, a.cy, a.r)
+            elif isinstance(a, ForkJoinNode):
+                svg_draw_fork_join_node(c, a.x, a.y, a.x + a.w, a.y + a.h)
+            elif isinstance(a, DecisionNode):
+                svg_draw_decision_node(c, a.cx, a.cy, a.size // 2, a.name)
         return c.output(width=w, height=h, padding=pad * scale)

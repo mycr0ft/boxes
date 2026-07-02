@@ -39,14 +39,14 @@ from math import atan2, cos, sin, pi
 from xml.sax.saxutils import escape
 
 from boxes.primitives import SOLID, DASHED, NONE, OPEN, TRIANGLE, DIAMOND, FILLED, \
-    DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION, CIRCLE, ARROW_SIZE, COMMENT_FOLD, \
-    _port_arrow, _arrow_backoff
+    DEFINITION, REDEFINITION, REFERENCE_SUBSETTING, PORTION, CIRCLE, UNOWNED, ARROW_SIZE, COMMENT_FOLD, \
+    ROUNDED_RADIUS, _port_arrow, _arrow_backoff, _node_outward_angle
 
 
 def _arrow_polygon(x, y, angle, style):
     """Return polygon/fill for an arrowhead, or (lines, None) for OPEN."""
-    if style == NONE or style is None or style in (PORTION, CIRCLE):
-        return None, style if style in (PORTION, CIRCLE) else None
+    if style == NONE or style is None or style in (PORTION, CIRCLE, UNOWNED):
+        return None, style if style in (PORTION, CIRCLE, UNOWNED) else None
     size = ARROW_SIZE
     if style == OPEN:
         lines = []
@@ -105,6 +105,14 @@ def _svg_draw_circle(c, x, y, angle):
         a = angle + sign * pi / 4
         c.add_line(cx, cy, cx + cos(a) * h, cy + sin(a) * h)
         c.add_line(cx, cy, cx + cos(a + pi) * h, cy + sin(a + pi) * h)
+
+
+def _svg_draw_unowned(c, x, y, angle):
+    """Open circle only — no cross — for unowned membership."""
+    r = max(3, ARROW_SIZE * 0.5)
+    cx = x - cos(angle) * r
+    cy = y - sin(angle) * r
+    c.add_circle(cx, cy, r, fill='none')
 
 
 def _svg_draw_portion(c, x, y, angle):
@@ -190,14 +198,21 @@ class SvgCanvas:
         parts.append(' />')
         self.elements.append(''.join(parts))
 
-    def add_rect(self, x, y, w, h, fill=None, stroke=None, width=None):
+    def add_rect(self, x, y, w, h, fill=None, stroke=None, width=None, rx=None, ry=None, dashed=False):
         fill = fill or self.FILL
         stroke = stroke or self.STROKE
         width = width or self.stroke_width
         x, y, w, h = self.s(x, y, w, h)
+        extras = ''
+        if rx is not None:
+            extras += f' rx="{self.s(rx):.1f}"'
+        if ry is not None:
+            extras += f' ry="{self.s(ry):.1f}"'
+        if dashed:
+            extras += f' stroke-dasharray="{width * 6},{width * 4}"'
         self.elements.append(
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
-            f' fill="{fill}" stroke="{stroke}" stroke-width="{width}" />'
+            f'{extras} fill="{fill}" stroke="{stroke}" stroke-width="{width}" />'
         )
 
     def add_text(self, x, y, text, color=None, size=None, anchor='middle'):
@@ -213,14 +228,17 @@ class SvgCanvas:
             f' text-anchor="{anchor}">{t}</text>'
         )
 
-    def add_polygon(self, points, fill=None, stroke=None, width=None):
+    def add_polygon(self, points, fill=None, stroke=None, width=None, dashed=False):
         fill = fill or 'black'
         stroke = stroke or self.STROKE
         width = width or self.stroke_width
         pts = ' '.join(f'{self.s(x):.1f},{self.s(y):.1f}' for x, y in points)
+        extra = ''
+        if dashed:
+            extra = f' stroke-dasharray="{width * 6},{width * 4}"'
         self.elements.append(
             f'<polygon points="{pts}" fill="{fill}"'
-            f' stroke="{stroke}" stroke-width="{width}" />'
+            f' stroke="{stroke}" stroke-width="{width}"{extra} />'
         )
 
     def add_circle(self, x, y, r=1, fill=None, stroke=None):
@@ -281,8 +299,11 @@ class SvgCanvas:
 
 # ── High-level drawing functions for diagrams ──
 
-def svg_draw_edge(c, e):
-    """Draw an edge (with or without waypoints) onto an SvgCanvas."""
+def svg_draw_edge(c, e, keep_away=None):
+    """Draw an edge (with or without waypoints) onto an SvgCanvas.
+    
+    keep_away : set of (x, y) tuples — points to avoid for label placement.
+    """
     if len(e.waypoints) >= 2:
         pts = list(e.waypoints)
         dashed = e.line_style == DASHED
@@ -315,11 +336,18 @@ def svg_draw_edge(c, e):
             dx = pts[-1][0] - pts[-2][0]
             dy = pts[-1][1] - pts[-2][1]
             angle = atan2(dy, dx)
-            poly, fill = _arrow_polygon(pts[-1][0], pts[-1][1], angle, e.target_style)
+            target_angle = angle
+            if e.target_style in (CIRCLE, UNOWNED):
+                node_angle = _node_outward_angle(pts[-1][0], pts[-1][1], e.target)
+                if node_angle is not None:
+                    target_angle = node_angle
+            poly, fill = _arrow_polygon(pts[-1][0], pts[-1][1], target_angle, e.target_style)
             if fill == CIRCLE:
-                _svg_draw_circle(c, pts[-1][0], pts[-1][1], angle)
+                _svg_draw_circle(c, pts[-1][0], pts[-1][1], target_angle)
+            elif fill == UNOWNED:
+                _svg_draw_unowned(c, pts[-1][0], pts[-1][1], target_angle)
             elif fill == PORTION:
-                _svg_draw_portion(c, pts[-1][0], pts[-1][1], angle)
+                _svg_draw_portion(c, pts[-1][0], pts[-1][1], target_angle)
             elif poly:
                 if fill == 'open':
                     for x1, y1, x2, y2 in poly:
@@ -328,17 +356,24 @@ def svg_draw_edge(c, e):
                     color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
                     c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
             if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
-                _svg_arrow_extras(c, pts[-1][0], pts[-1][1], angle, fill)
+                _svg_arrow_extras(c, pts[-1][0], pts[-1][1], target_angle, fill)
 
         if e.source_style and e.source_style != NONE and len(pts) >= 2:
             dx = pts[1][0] - pts[0][0]
             dy = pts[1][1] - pts[0][1]
             angle = atan2(dy, dx)
-            poly, fill = _arrow_polygon(pts[0][0], pts[0][1], angle + pi, e.source_style)
+            source_angle = angle + pi
+            if e.source_style in (CIRCLE, UNOWNED):
+                node_angle = _node_outward_angle(pts[0][0], pts[0][1], e.source)
+                if node_angle is not None:
+                    source_angle = node_angle
+            poly, fill = _arrow_polygon(pts[0][0], pts[0][1], source_angle, e.source_style)
             if fill == CIRCLE:
-                _svg_draw_circle(c, pts[0][0], pts[0][1], angle + pi)
+                _svg_draw_circle(c, pts[0][0], pts[0][1], source_angle)
+            elif fill == UNOWNED:
+                _svg_draw_unowned(c, pts[0][0], pts[0][1], source_angle)
             elif fill == PORTION:
-                _svg_draw_portion(c, pts[0][0], pts[0][1], angle + pi)
+                _svg_draw_portion(c, pts[0][0], pts[0][1], source_angle)
             elif poly:
                 if fill == 'open':
                     for x1, y1, x2, y2 in poly:
@@ -347,7 +382,7 @@ def svg_draw_edge(c, e):
                     color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
                     c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
             if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
-                _svg_arrow_extras(c, pts[0][0], pts[0][1], angle + pi, fill)
+                _svg_arrow_extras(c, pts[0][0], pts[0][1], source_angle, fill)
 
         # Label at midpoint
         if e.label:
@@ -356,6 +391,7 @@ def svg_draw_edge(c, e):
                         for i in range(len(pts) - 1))
             target = total // 2
             acc = 0
+            keep_away = keep_away or set()
             for i in range(len(pts) - 1):
                 x1, y1 = pts[i]
                 x2, y2 = pts[i + 1]
@@ -366,13 +402,22 @@ def svg_draw_edge(c, e):
                         if x1 == x2:
                             mx = x1
                             my = y1 + (rem if y2 > y1 else -rem)
-                            lx, ly = mx, my - 4
+                            lx, ly = mx + 12, my
+                            offsets = [(0, 0), (0, -12), (-24, 0), (0, 8)]
                         else:
                             mx = x1 + (rem if x2 > x1 else -rem)
                             my = y1
                             lx, ly = mx, my - 6
+                            offsets = [(0, 0), (12, 0), (0, -8), (-12, 0), (0, 8)]
                     else:
                         lx, ly = x1, y1 - 4
+                        offsets = [(0, 0)]
+                    for ox, oy in offsets:
+                        pos = (lx + ox, ly + oy)
+                        if not any(abs(pos[0] - p[0]) < 12 and abs(pos[1] - p[1]) < 12
+                                   for p in keep_away):
+                            lx, ly = pos
+                            break
                     c.add_text(lx, ly, e.label, anchor='middle')
                     break
                 acc += seg
@@ -401,35 +446,94 @@ def svg_draw_edge(c, e):
         c.add_line(lsx, lsy, ltx, lty, dashed=dashed)
 
         angle = atan2(ty - sy, tx - sx)
-        poly, fill = _arrow_polygon(tx, ty, angle, e.target_style)
+        target_angle = angle
+        if e.target_style in (CIRCLE, UNOWNED):
+            node_angle = _node_outward_angle(tx, ty, e.target)
+            if node_angle is not None:
+                target_angle = node_angle
+        poly, fill = _arrow_polygon(tx, ty, target_angle, e.target_style)
         if fill == CIRCLE:
-            _svg_draw_circle(c, tx, ty, angle)
+            _svg_draw_circle(c, tx, ty, target_angle)
+        elif fill == UNOWNED:
+            _svg_draw_unowned(c, tx, ty, target_angle)
         elif fill == PORTION:
-            _svg_draw_portion(c, tx, ty, angle)
+            _svg_draw_portion(c, tx, ty, target_angle)
         elif poly:
             color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
             c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
         if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
-            _svg_arrow_extras(c, tx, ty, angle, fill)
-        poly, fill = _arrow_polygon(sx, sy, angle + pi, e.source_style)
+            _svg_arrow_extras(c, tx, ty, target_angle, fill)
+        source_angle = angle + pi
+        if e.source_style in (CIRCLE, UNOWNED):
+            node_angle = _node_outward_angle(sx, sy, e.source)
+            if node_angle is not None:
+                source_angle = node_angle
+        poly, fill = _arrow_polygon(sx, sy, source_angle, e.source_style)
         if fill == CIRCLE:
-            _svg_draw_circle(c, sx, sy, angle + pi)
+            _svg_draw_circle(c, sx, sy, source_angle)
+        elif fill == UNOWNED:
+            _svg_draw_unowned(c, sx, sy, source_angle)
         elif fill == PORTION:
-            _svg_draw_portion(c, sx, sy, angle + pi)
+            _svg_draw_portion(c, sx, sy, source_angle)
         elif poly:
             color = 'white' if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING) else fill
             c.add_polygon(poly, fill=color, stroke=c.STROKE if color in ('white', 'open') else color)
         if fill in (DEFINITION, REDEFINITION, REFERENCE_SUBSETTING):
-            _svg_arrow_extras(c, sx, sy, angle + pi, fill)
+            _svg_arrow_extras(c, sx, sy, source_angle, fill)
 
         if e.label:
             mx, my = (sx + tx) // 2, (sy + ty) // 2
-            c.add_text(mx, my - 6, e.label, anchor='middle')
+            if sx == tx:
+                c.add_text(mx + 12, my, e.label, anchor='middle')
+            else:
+                c.add_text(mx, my - 6, e.label, anchor='middle')
+
+
+# ── activity node SVG drawing ──
+
+def svg_draw_start_node(c, cx, cy, r):
+    """Filled circle — activity start."""
+    c.add_circle(cx, cy, r, fill=c.STROKE)
+
+
+def svg_draw_done_node(c, cx, cy, r):
+    """Bullseye (outer ring + inner filled) — activity done."""
+    c.add_circle(cx, cy, r, fill='none')
+    inner_r = max(2, r // 2)
+    c.add_circle(cx, cy, inner_r, fill=c.STROKE)
+
+
+def svg_draw_terminate_node(c, cx, cy, r):
+    """Open circle with X — activity terminate."""
+    c.add_circle(cx, cy, r, fill='none')
+    h = r * 0.7
+    for sign in (-1, 1):
+        a = pi / 4 * sign
+        c.add_line(cx, cy, cx + cos(a) * h, cy + sin(a) * h)
+        c.add_line(cx, cy, cx + cos(a + pi) * h, cy + sin(a + pi) * h)
+
+
+def svg_draw_fork_join_node(c, x1, y1, x2, y2):
+    """Filled rectangle — activity fork/join synchronization bar."""
+    c.add_rect(x1, y1, x2 - x1, y2 - y1, fill=c.STROKE)
+
+
+def svg_draw_decision_node(c, cx, cy, size, name=''):
+    """Diamond polygon — activity decision/merge node."""
+    pts = [(cx, cy - size), (cx + size, cy), (cx, cy + size), (cx - size, cy)]
+    c.add_polygon(pts, fill='white')
+    if name:
+        c.add_text(cx, cy + 4, name, anchor='middle')
 
 
 def svg_draw_node(c, n):
     """Draw a node box with stereotypes, name, and attributes."""
-    c.add_rect(n.x, n.y, n.w, n.h)
+    kw = {}
+    if n.rounded:
+        kw['rx'] = kw['ry'] = min(ROUNDED_RADIUS, n.w // 4, n.h // 4)
+    if n.dashed:
+        kw['dashed'] = True
+    c.add_rect(n.x, n.y, n.w, n.h, **kw)
     box_cx = n.x + n.w // 2
     lines = []
     if n.stereotypes:
@@ -488,7 +592,7 @@ def svg_draw_view(c, v):
         (x2, y2),
         (x1, y2),
     ]
-    c.add_polygon(pts, fill='white')
+    c.add_polygon(pts, fill='white', dashed=v.dashed)
 
     lines = []
     if v.stereotypes:
