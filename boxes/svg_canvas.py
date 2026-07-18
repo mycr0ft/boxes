@@ -526,6 +526,24 @@ def svg_draw_decision_node(c, cx, cy, size, name=''):
         c.add_text(cx, cy + 4, name, anchor='middle')
 
 
+def svg_draw_history_node(c, cx, cy, r, deep=False):
+    """Shallow- or deep-history pseudostate.
+
+    Shallow history shows ``H`` inside an open circle; deep history shows
+    ``H*``.  Drawn as a ring with the label centred inside it.
+    """
+    c.add_circle(cx, cy, r, fill='white')
+    label = 'H*' if deep else 'H'
+    c.add_text(cx, cy + 4, label, anchor='middle')
+
+
+def svg_draw_entry_exit_point(c, cx, cy, r, label=None, kind='entry'):
+    """Entry/exit point — hollow circle (optionally labelled)."""
+    c.add_circle(cx, cy, r, fill='white')
+    if label:
+        c.add_text(cx, cy + r + 8, label, anchor='middle')
+
+
 def svg_draw_node(c, n):
     """Draw a node box with stereotypes, name, and attributes."""
     kw = {}

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "boxes"
-version = "0.1.0"
+version = "0.2.0"
 description = "UML/SysML block diagrams in your terminal (and SVG)"
 authors = []
 
@@ -8,6 +8,9 @@ authors = []
 python = "^3.10"
 drawille = "*"
 pyelk = { version = "*", optional = true }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
 
 [tool.poetry.extras]
 pyelk = ["pyelk"]

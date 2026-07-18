@@ -26,6 +26,7 @@ layout.py    : homegrown orthogonal router (used by default)
 import json
 import subprocess
 import os
+from collections import defaultdict
 from pathlib import Path
 
 _ELK_BOOTSTRAP = """
@@ -88,6 +89,35 @@ def _elk_label(obj):
     return '\n'.join(label_parts)
 
 
+_SIDE_TO_ELK = {
+    'left': 'WEST',
+    'right': 'EAST',
+    'top': 'NORTH',
+    'bottom': 'SOUTH',
+}
+
+
+def _user_port_pos(side, offset, nw, nh):
+    """ELK port (x, y) relative to a node so the routed edge endpoint lands on
+    the same place the renderer draws the port box (see ``Port.update_pos``).
+
+    Port boxes are 8x8 and sit *outside* the node boundary on the chosen side;
+    the port centre is offset 4 px inwards from the port's outer edge.
+
+    A ``None`` offset falls back to 0.5 (middle of the side).
+    """
+    off = 0.5 if offset is None else float(offset)
+    if side == 'left':
+        return -8, int(nh * off) - 4
+    if side == 'right':
+        return nw, int(nh * off) - 4
+    if side == 'top':
+        return int(nw * off) - 4, -8
+    if side == 'bottom':
+        return int(nw * off) - 4, nh
+    return 0, 0
+
+
 def _distribute_sides(count, primary, avoid=None):
     """Distribute `count` ports across sides, starting with `primary`.
     
@@ -124,77 +154,132 @@ def to_elk_json(diagram):
     children = []
     edges = []
     port_index = {}
-    port_side = {}  # elk_id -> {'out': [edges], 'in': [edges]}
     id_map = {}     # elk_id -> Diagram object (Node / Comment / View)
 
     # Every element that can be an edge endpoint or needs positioning.
     elements = list(diagram.nodes) + list(diagram.comments) + list(diagram.views)
 
+    # Group edges per node/role.  Edges with an explicit user Port
+    # (``source_port``/``target_port``) are routed through that port and
+    # keep its side; edges without one fall back to the legacy
+    # auto-distribution, which picks sides not already claimed by the
+    # explicit ports on the same node.
+    by_eid_out_auto = defaultdict(list)   # eid -> [edges with no source_port]
+    by_eid_in_auto  = defaultdict(list)   # eid -> [edges with no target_port]
+    explicit_ports = {}                  # id(user_port) -> (node_eid, port, [(role, edge), ...])
+
     for e in diagram.edges:
         sid = _elk_id(e.source)
         tid = _elk_id(e.target)
-        port_side.setdefault(sid, {'out': [], 'in': []})['out'].append(e)
-        port_side.setdefault(tid, {'out': [], 'in': []})['in'].append(e)
+        sp = getattr(e, 'source_port', None)
+        tp = getattr(e, 'target_port', None)
+        if sp is not None:
+            key = id(sp)
+            rec = explicit_ports.get(key)
+            if rec is None:
+                rec = explicit_ports[key] = [sid, sp, []]
+            rec[1] = sp
+            rec[2].append(('source', e))
+        else:
+            by_eid_out_auto[sid].append(e)
+        if tp is not None:
+            key = id(tp)
+            rec = explicit_ports.get(key)
+            if rec is None:
+                rec = explicit_ports[key] = [tid, tp, []]
+            rec[2].append(('target', e))
+        else:
+            by_eid_in_auto[tid].append(e)
 
     for n in elements:
         eid = _elk_id(n)
         id_map[eid] = n
+        node_w = n.w if n.w else 100
+        node_h = n.h if n.h else 50
         node_ports = []
-        ps = port_side.get(eid, {'out': [], 'in': []})
 
-        out_sides = _distribute_sides(len(ps['out']), 'SOUTH', 'NORTH' if ps['in'] else None)
-        for i, e in enumerate(ps['out']):
-            pid = f'{eid}_out_{i}'
-            port_index[(eid, e, 'source')] = pid
-            port_props = {'port.side': out_sides[i], 'port.index': str(i)}
-            node_w = n.w if n.w else 100
-            node_h = n.h if n.h else 50
-            if out_sides[i] == 'SOUTH':
-                port_x = (i + 1) * node_w // (len(ps['out']) + 1) - 4
-                port_y = node_h
-            elif out_sides[i] == 'NORTH':
-                port_x = (i + 1) * node_w // (len(ps['out']) + 1) - 4
-                port_y = -8
-            elif out_sides[i] == 'EAST':
-                port_x = node_w
-                port_y = (i + 1) * node_h // (len(ps['out']) + 1) - 4
-            elif out_sides[i] == 'WEST':
-                port_x = -8
-                port_y = (i + 1) * node_h // (len(ps['out']) + 1) - 4
-            else:
-                port_x, port_y = 0, 0
-            node_ports.append({
-                'id': pid, 'width': 8, 'height': 8,
-                'x': port_x, 'y': port_y,
-                'properties': port_props,
-            })
+        # 1) Explicit user ports on this node.  Multiple ports may share a
+        # side; auto-distribute them along the side if any has offset=None,
+        # otherwise honour each port's proportional offset (matching what
+        # ``Port.update_pos`` will render).
+        explicit_by_side = defaultdict(list)  # elk_side -> [(port, [(role, edge), ...])]
+        for (port_eid, port, refs) in explicit_ports.values():
+            if port_eid != eid:
+                continue
+            elk_side = _SIDE_TO_ELK.get(port.side, 'WEST')
+            explicit_by_side[elk_side].append((port, refs))
 
-        in_sides = _distribute_sides(len(ps['in']), 'NORTH', 'SOUTH' if ps['out'] else None)
-        for i, e in enumerate(ps['in']):
-            pid = f'{eid}_in_{i}'
-            port_index[(eid, e, 'target')] = pid
-            port_props = {'port.side': in_sides[i], 'port.index': str(i)}
-            node_w = n.w if n.w else 100
-            node_h = n.h if n.h else 50
-            if in_sides[i] == 'NORTH':
-                port_x = (i + 1) * node_w // (len(ps['in']) + 1) - 4
-                port_y = -8
-            elif in_sides[i] == 'SOUTH':
-                port_x = (i + 1) * node_w // (len(ps['in']) + 1) - 4
-                port_y = node_h
-            elif in_sides[i] == 'EAST':
-                port_x = node_w
-                port_y = (i + 1) * node_h // (len(ps['in']) + 1) - 4
-            elif in_sides[i] == 'WEST':
-                port_x = -8
-                port_y = (i + 1) * node_h // (len(ps['in']) + 1) - 4
-            else:
-                port_x, port_y = 0, 0
-            node_ports.append({
-                'id': pid, 'width': 8, 'height': 8,
-                'x': port_x, 'y': port_y,
-                'properties': port_props,
-            })
+        for elk_side, items in explicit_by_side.items():
+            n_items = len(items)
+            auto_dist = any(p.offset is None for p, _ in items)
+            for i, (port, refs) in enumerate(items):
+                pid = f'{eid}_p{id(port)}'
+                if auto_dist:
+                    # Spread evenly along the side using the same rule as
+                    # ``_update_port_positions`` so the rendered marker lands
+                    # on the same spot the edge endpoint snaps to.
+                    if elk_side in ('WEST', 'EAST'):
+                        px = -8 if elk_side == 'WEST' else node_w
+                        py = (i + 1) * node_h // (n_items + 1) - 4
+                    else:  # NORTH / SOUTH
+                        py = -8 if elk_side == 'NORTH' else node_h
+                        px = (i + 1) * node_w // (n_items + 1) - 4
+                else:
+                    side_name = port.side
+                    px, py = _user_port_pos(side_name, port.offset, node_w, node_h)
+                port_props = {'port.side': elk_side, 'port.index': str(i)}
+                node_ports.append({
+                    'id': pid, 'width': 8, 'height': 8,
+                    'x': px, 'y': py,
+                    'properties': port_props,
+                })
+                for role, e in refs:
+                    port_index[(eid, e, role)] = pid
+
+        # 2) Auto ports for edges that did not specify an explicit port.
+        # Avoid sides already used by explicit ports on this node.
+        claimed = set(explicit_by_side.keys())
+        out_needed = by_eid_out_auto.get(eid, [])
+        in_needed  = by_eid_in_auto.get(eid, [])
+
+        def _auto_geometry(side, count, idx):
+            if side == 'SOUTH':
+                return (idx + 1) * node_w // (count + 1) - 4, node_h
+            if side == 'NORTH':
+                return (idx + 1) * node_w // (count + 1) - 4, -8
+            if side == 'EAST':
+                return node_w, (idx + 1) * node_h // (count + 1) - 4
+            if side == 'WEST':
+                return -8, (idx + 1) * node_h // (count + 1) - 4
+            return 0, 0
+
+        # Local helper that names the loop variable consistently.
+        def _add_auto(role, edges, primary_side, avoid_side):
+            sides = _distribute_sides(
+                len(edges), primary_side,
+                avoid=avoid_side if avoid_side else None,
+            )
+            # Skip sides already used by explicit ports on this node by
+            # rotating to the next available side in the default cycle.
+            pick = [s for s in sides if s not in claimed] or sides
+            for idx, e in enumerate(edges):
+                side = pick[idx % len(pick)]
+                pid = f'{eid}_{role}_{idx}'
+                port_index[(eid, e, role)] = pid
+                port_props = {'port.side': side, 'port.index': str(idx)}
+                gx, gy = _auto_geometry(side, len(edges), idx)
+                node_ports.append({
+                    'id': pid, 'width': 8, 'height': 8,
+                    'x': gx, 'y': gy,
+                    'properties': port_props,
+                })
+
+        if out_needed:
+            _add_auto('source', out_needed, 'SOUTH',
+                      'NORTH' if in_needed else None)
+        if in_needed:
+            _add_auto('target', in_needed, 'NORTH',
+                      'SOUTH' if out_needed else None)
 
         child = {
             'id': eid,
@@ -321,6 +406,12 @@ def apply_elk_result(diagram, result, id_map=None):
                 n.w = int(en['width'])
                 n.h = int(en['height'])
 
+    # Re-position port markers so explicit ``source_port``/``target_port``
+    # references resolve to the same spot we'll snap the edge endpoints to.
+    update_ports = getattr(diagram, '_update_port_positions', None)
+    if callable(update_ports):
+        update_ports()
+
     elk_edges = {}
     for edge in result.get('edges', []):
         elk_edges[edge['id']] = edge
@@ -352,11 +443,20 @@ def apply_elk_result(diagram, result, id_map=None):
                 if p != cleaned[-1]:
                     cleaned.append(p)
 
-            # Snap first/last waypoint to node boundaries so arrowheads
-            # sit flush instead of hovering off the port centre.
-            if len(cleaned) >= 1:
+            # Snap first/last waypoint to the relevant port centre for
+            # edges that explicitly named one — this is what the renderer
+            # actually draws, so the arrowhead sits flush on the marker
+            # instead of floating off where ELK routed the line.  For
+            # port-less edges fall back to the node-boundary snap.
+            sp = getattr(e, 'source_port', None)
+            tp = getattr(e, 'target_port', None)
+            if sp is not None:
+                cleaned[0] = (sp.cx, sp.cy)
+            elif len(cleaned) >= 1:
                 cleaned[0] = _snap_to_node(cleaned[0], e.source)
-            if len(cleaned) >= 2:
+            if tp is not None:
+                cleaned[-1] = (tp.cx, tp.cy)
+            else:
                 cleaned[-1] = _snap_to_node(cleaned[-1], e.target)
 
             e.waypoints = cleaned

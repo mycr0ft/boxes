@@ -676,6 +676,41 @@ def draw_decision_node(c, cx, cy, size, name=''):
         c.set_text(cx - len(name), cy - 2, name)
 
 
+def draw_history_node(c, cx, cy, r, deep=False):
+    """Draw a shallow- or deep-history pseudostate circle with an inner label.
+
+    Shallow history shows an ``H`` inside an open circle; deep history shows
+    an ``H*`` (a small asterisk follows the H).  UML/SysML pseudo-shape,
+    used for state-machine region history.  Drawn as an open circle (ring)
+    with the label text centred inside it.
+    """
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            d = round((dx * dx + dy * dy) ** 0.5)
+            if d == r:
+                c.set(cx + dx, cy + dy)
+    label = 'H*' if deep else 'H'
+    c.set_text(cx - len(label), cy - 2, label)
+
+
+def draw_entry_exit_point(c, cx, cy, r, label=None, kind='entry'):
+    """Draw a hollow circle for a state's entry or exit point.
+
+    The shape is identical for both kinds (an open circle, optionally with
+    a small label drawn outside it); ``kind`` is recorded only for
+    documentation/structural purposes — the visual distinction comes from
+    the connecting edges (entry points have edges pointing into the state,
+    exit points have edges pointing out).
+    """
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            d = round((dx * dx + dy * dy) ** 0.5)
+            if d == r:
+                c.set(cx + dx, cy + dy)
+    if label:
+        c.set_text(cx - len(label), cy + r + 1, label)
+
+
 # ── box ──
 
 def draw_class_box(c, x1, y1, x2, y2, name, stereotypes=None, attributes=None, rounded=False, dashed=False):

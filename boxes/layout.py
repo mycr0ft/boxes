@@ -30,10 +30,12 @@ from drawille import Canvas
 from boxes.primitives import draw_polyline, draw_relation, draw_class_box, draw_port_box, \
     draw_comment_box, draw_view_box, draw_start_node, draw_done_node, draw_terminate_node, \
     draw_fork_join_node, draw_decision_node, \
+    draw_history_node, draw_entry_exit_point, \
     SOLID, DASHED, OPEN, NONE, FILLED, DIAMOND, TRIANGLE, CIRCLE, UNOWNED, PORT_W, PORT_H
 from boxes.svg_canvas import SvgCanvas, svg_draw_edge, svg_draw_node, svg_draw_port, svg_draw_comment, svg_draw_view, \
     svg_draw_start_node, svg_draw_done_node, svg_draw_terminate_node, \
-    svg_draw_fork_join_node, svg_draw_decision_node
+    svg_draw_fork_join_node, svg_draw_decision_node, \
+    svg_draw_history_node, svg_draw_entry_exit_point
 
 _MIN_PORT_SPACING = 8
 from collections import defaultdict
@@ -360,6 +362,216 @@ class DecisionNode:
 
     def box(self):
         return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+
+# ── state-machine pseudostates ──
+#
+# These share shapes with the activity control nodes above.  They exist as
+# distinct classes so that diagram authors (and the sysmlpy adapter) can
+# mark intent explicitly and so that future per-kind rendering tweaks (for
+# example, labelling a choice diamond with its guard) have a clear home.
+#
+# UML 2.5 / SysML v2 state-machine pseudostate canonical set:
+#   initial, final, terminate, junction, choice, fork, join,
+#   shallow-history, deep-history, entry-point, exit-point.
+# All are covered here except entry/exit points which are boundary markers
+# on a StateNode — see EntryPoint / ExitPoint below.
+
+class InitialPseudostate(StartNode):
+    """Filled black circle — state-machine initial pseudostate.
+
+    Visually identical to the activity :class:`StartNode`; the source of
+    the single automatic transition into the first real state.
+    """
+
+    def __init__(self, name='initial'):
+        super().__init__(name=name)
+
+
+class JunctionPseudostate(StartNode):
+    """Filled black circle — state-machine junction pseudostate.
+
+    Visually identical to the initial pseudostate but used as an
+    intermediate merge/branch point in compound transition paths.  Named
+    junctions (```junction J1;```) get a label rendered alongside.  Drawn
+    through the same primitive as :class:`StartNode`.
+    """
+
+    def __init__(self, name=''):
+        super().__init__(name=name)
+
+
+class ChoicePseudostate(DecisionNode):
+    """Diamond — state-machine choice pseudostate.
+
+    Identical shape to the activity :class:`DecisionNode`; selects one
+    outgoing transition at runtime based on guard expressions.  Held as a
+    distinct class so the intent is structural.
+    """
+
+    def __init__(self, name=''):
+        super().__init__(name=name)
+
+
+class ForkPseudostate(ForkJoinNode):
+    """Thick synchronization bar — state-machine fork pseudostate.
+
+    Splits one incoming transition into multiple orthogonal region entries.
+    Visually identical to the activity :class:`ForkJoinNode`.
+    """
+
+    def __init__(self, name='', w=36, h=8):
+        super().__init__(name=name, w=w, h=h)
+
+
+class JoinPseudostate(ForkJoinNode):
+    """Thick synchronization bar — state-machine join pseudostate.
+
+    Merges multiple orthogonal region exits into one outgoing transition.
+    Visually identical to the activity :class:`ForkJoinNode`.
+    """
+
+    def __init__(self, name='', w=36, h=8):
+        super().__init__(name=name, w=w, h=h)
+
+
+class FinalState(DoneNode):
+    """Bullseye — state-machine final state (activity-final shape).
+
+    Visually identical to the activity :class:`DoneNode`; entering it
+    terminates the enclosing state machine.
+    """
+
+    def __init__(self, name='final'):
+        super().__init__(name=name)
+
+
+class TerminatePseudostate(TerminateNode):
+    """Open circle with X — state-machine terminate pseudostate.
+
+    Entering a terminate pseudostate ends the execution of the owning
+    state machine without running any exit behaviours of enclosing states.
+    Visually identical to the activity :class:`TerminateNode`.
+    """
+
+    def __init__(self, name='terminate'):
+        super().__init__(name=name)
+
+
+# State-machine history pseudostate — needs its own primitive.
+
+class HistoryPseudostate:
+    """Shallow- or deep-history pseudostate — open circle with ``H`` / ``H*``.
+
+    Resumes the most-recent active substate of the owning composite state
+    (shallow) or the most-recent active recursive substate configuration
+    (deep).  Drawn via :func:`boxes.primitives.draw_history_node` /
+    :func:`boxes.svg_canvas.svg_draw_history_node`.
+
+    Parameters
+    ----------
+    name : str
+        Optional label (defaults to ``''``; the rendered glyph already
+        says ``H`` / ``H*``).
+    deep : bool
+        ``True`` → deep history (``H*``); ``False`` → shallow (``H``).
+    r : int
+        Radius of the surrounding circle.  Defaults to ``8`` (slightly
+        larger than the activity start node so the H glyph fits).
+    """
+
+    def __init__(self, name='', deep=False, r=8):
+        self.name = name
+        self.deep = deep
+        self.r = r
+        d = r * 2 + 2
+        self.w = self.h = d
+        self.x = self.y = 0
+
+    @property
+    def cx(self):
+        return self.x + self.w // 2
+
+    @property
+    def cy(self):
+        return self.y + self.h // 2
+
+    def box(self):
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+
+# Entry/exit point — hollow circle attachable to a state's boundary.
+# Lives in the same bucket as Port so routing treats it identically (port-
+# to-port Z-shaped routing).  The only difference is its rendering: a hollow
+# circle (via draw_entry_exit_point / svg_draw_entry_exit_point) instead of
+# the small filled square used by the regular Port primitive.
+
+class EntryPoint(Port):
+    """Hollow-circle boundary marker — state entry point.
+
+    A named point on a composite state's boundary at which an external
+    transition can enter and then dispatch to an internal substate.  Drawn
+    as an open circle of the same diameter as a :class:`Port` box.  Connected
+    via the regular port-to-port routing path, so edges between an entry
+    point and an internal substate work exactly like edges between two
+    ports.
+    """
+
+    def __init__(self, label, side='left', offset=0.5, direction=None):
+        super().__init__(label, side=side, offset=offset, direction=direction)
+        self.kind = 'entry'
+
+
+class ExitPoint(Port):
+    """Hollow-circle boundary marker — state exit point.
+
+    A named point on a composite state's boundary through which an internal
+    substate can hand control to an external transition.  Visually identical
+    to :class:`EntryPoint`; the intent is signalled through ``kind`` and
+    by the direction of the connecting edges (entry edges in, exit edges
+    out).
+    """
+
+    def __init__(self, label, side='right', offset=0.5, direction=None):
+        super().__init__(label, side=side, offset=offset, direction=direction)
+        self.kind = 'exit'
+
+
+class StateNode(Node):
+    """Rounded-corner node for a UML/SysML state.
+
+    Visually identical to a :class:`Node` with ``rounded=True`` (which is
+    already a base ``Node`` capability) but with two niceties:
+
+    1.  Defaults to the ``«state»`` stereotype when none is supplied, so
+        rendering code can simply emit a SysML state without typing
+        ``stereotypes=['state']`` every time.
+    2.  Accepts an optional list of ``substates`` (other :class:`StateNode`
+        or any :class:`Node` subclass).  At present these are rendered as
+        top-level siblings — a future layout pass can render them nested
+        inside the parent state's content area (mirroring
+        :class:`View.children`).
+
+    Parameters
+    ----------
+    name : str
+        State name shown inside the box.
+    stereotypes : list of str, optional
+        Defaults to ``['state']``.  Pass an empty list to suppress the
+        stereotype line entirely.
+    attributes : list of str, optional
+        Entry/exit/do behaviour lines shown below the separator.
+    substates : list of Node, optional
+        Child states for future composite-state layout.
+    """
+
+    def __init__(self, name, stereotypes=None, attributes=None,
+                 substates=None, dashed=False):
+        if stereotypes is None:
+            stereotypes = ['state']
+        super().__init__(name, stereotypes=stereotypes,
+                         attributes=attributes, rounded=True, dashed=dashed)
+        self.substates = list(substates) if substates else []
 
 
 class View:
@@ -722,6 +934,142 @@ class Diagram:
         self.activities.append(n)
         return n
 
+    # ── state-machine pseudostates ──
+
+    def add_initial(self, name='initial'):
+        """Add a state-machine initial pseudostate (filled black circle).
+
+        Returns
+        -------
+        InitialPseudostate
+        """
+        n = InitialPseudostate(name=name)
+        self.activities.append(n)
+        return n
+
+    def add_junction(self, name=''):
+        """Add a state-machine junction pseudostate (filled black circle).
+
+        Returns
+        -------
+        JunctionPseudostate
+        """
+        n = JunctionPseudostate(name=name)
+        self.activities.append(n)
+        return n
+
+    def add_choice(self, name=''):
+        """Add a state-machine choice pseudostate (diamond).
+
+        Returns
+        -------
+        ChoicePseudostate
+        """
+        n = ChoicePseudostate(name=name)
+        self.activities.append(n)
+        return n
+
+    def add_fork_pseudostate(self, name='', w=36, h=8):
+        """Add a state-machine fork pseudostate (synchronization bar).
+
+        Distinct name from :meth:`add_fork` to mark state-machine intent;
+        shape is identical.
+
+        Returns
+        -------
+        ForkPseudostate
+        """
+        n = ForkPseudostate(name=name, w=w, h=h)
+        self.activities.append(n)
+        return n
+
+    def add_join_pseudostate(self, name='', w=36, h=8):
+        """Add a state-machine join pseudostate (synchronization bar).
+
+        Returns
+        -------
+        JoinPseudostate
+        """
+        n = JoinPseudostate(name=name, w=w, h=h)
+        self.activities.append(n)
+        return n
+
+    def add_final_state(self, name='final'):
+        """Add a state-machine final state (bullseye).
+
+        Returns
+        -------
+        FinalState
+        """
+        n = FinalState(name=name)
+        self.activities.append(n)
+        return n
+
+    def add_terminate(self, name='terminate', kind='state'):
+        """Add a state-machine terminate pseudostate (open circle with X).
+
+        ``kind`` is accepted for forward compatibility — activity terminate
+        (``kind='activity'``) and state terminate (``kind='state'``) share
+        both shape and class today.
+
+        Returns
+        -------
+        TerminatePseudostate
+        """
+        n = TerminatePseudostate(name=name)
+        self.activities.append(n)
+        return n
+
+    def add_history(self, name='', deep=False, r=8):
+        """Add a state-machine history pseudostate (open circle with H / H*).
+
+        Returns
+        -------
+        HistoryPseudostate
+        """
+        n = HistoryPseudostate(name=name, deep=deep, r=r)
+        self.activities.append(n)
+        return n
+
+    def add_state(self, name, stereotypes=None, attributes=None,
+                  substates=None, dashed=False):
+        """Add a state node with rounded corners and default ``«state»``.
+
+        Returns
+        -------
+        StateNode
+        """
+        n = StateNode(name, stereotypes=stereotypes, attributes=attributes,
+                      substates=substates, dashed=dashed)
+        self.nodes.append(n)
+        return n
+
+    def add_entry_point(self, state, label, side='left', offset=None,
+                        direction=None):
+        """Attach an :class:`EntryPoint` (hollow boundary circle) to *state*.
+
+        Returns
+        -------
+        EntryPoint
+        """
+        p = EntryPoint(label, side=side, offset=offset, direction=direction)
+        p.parent = state
+        state.ports.append(p)
+        return p
+
+    def add_exit_point(self, state, label, side='right', offset=None,
+                       direction=None):
+        """Attach an :class:`ExitPoint` (hollow boundary circle) to *state*.
+
+        Returns
+        -------
+        ExitPoint
+        """
+        p = ExitPoint(label, side=side, offset=offset, direction=direction)
+        p.parent = state
+        state.ports.append(p)
+        return p
+
     def _update_port_positions(self):
         for n in self.nodes:
             if not n.ports:
@@ -882,6 +1230,19 @@ class Diagram:
         for v in self.views:
             children.update(v.children)
         return children
+
+    def _is_visual_containment(self, edge):
+        """Check if edge is a containment edge that's visually redundant.
+
+        Returns True if the edge has a containment marker (CIRCLE or UNOWNED)
+        and the target is a child of the source View, making the arrow redundant
+        since the visual enclosure already indicates containment.
+        """
+        if edge.source_style not in (CIRCLE, UNOWNED):
+            return False
+        if not isinstance(edge.source, View):
+            return False
+        return edge.target in edge.source.children
 
     def _assign_layers(self):
         child_nodes = self._child_nodes()
@@ -1331,6 +1692,8 @@ class Diagram:
 
         gap_used = {}
         for e in self.edges:
+            if self._is_visual_containment(e):
+                continue
             if isinstance(e.source, (Comment, View)) or isinstance(e.target, (Comment, View)):
                 self._route_special_edge(e, orthogonal=(routing == 'orthogonal'))
             elif routing == 'orthogonal':
@@ -1346,6 +1709,8 @@ class Diagram:
         used_labels = set()
         all_path_px = set()
         for e in self.edges:
+            if self._is_visual_containment(e):
+                continue
             pts = e.waypoints
             for i in range(len(pts) - 1):
                 x1, y1 = pts[i]
@@ -1359,6 +1724,8 @@ class Diagram:
                     for x in range(lo, hi + 1, 4):
                         all_path_px.add((x, y1))
         for e in self.edges:
+            if self._is_visual_containment(e):
+                continue
             own = set(e.waypoints)
             for i in range(len(e.waypoints) - 1):
                 x1, y1 = e.waypoints[i]
@@ -1396,7 +1763,10 @@ class Diagram:
                 continue
             draw_class_box(c, n.x, n.y, n.x + n.w, n.y + n.h, n.name, n.stereotypes, n.attributes, rounded=n.rounded, dashed=n.dashed)
             for p in n.ports:
-                draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
+                if isinstance(p, (EntryPoint, ExitPoint)):
+                    draw_entry_exit_point(c, p.cx, p.cy, PORT_W // 2, label=p.label, kind=getattr(p, 'kind', 'entry'))
+                else:
+                    draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
         for com in self.comments:
             draw_comment_box(c, com.x, com.y, com.x + com.w, com.y + com.h, com.text)
         for v in self.views:
@@ -1405,7 +1775,10 @@ class Diagram:
                 draw_class_box(c, child.x, child.y, child.x + child.w, child.y + child.h,
                                child.name, child.stereotypes, child.attributes, rounded=child.rounded, dashed=child.dashed)
                 for p in child.ports:
-                    draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
+                    if isinstance(p, (EntryPoint, ExitPoint)):
+                        draw_entry_exit_point(c, p.cx, p.cy, PORT_W // 2, label=p.label, kind=getattr(p, 'kind', 'entry'))
+                    else:
+                        draw_port_box(c, p.x, p.y, p.label, side=p.side, direction=p.direction)
         for a in self.activities:
             if isinstance(a, StartNode):
                 draw_start_node(c, a.cx, a.cy, a.r)
@@ -1417,6 +1790,8 @@ class Diagram:
                 draw_fork_join_node(c, a.x, a.y, a.x + a.w, a.y + a.h)
             elif isinstance(a, DecisionNode):
                 draw_decision_node(c, a.cx, a.cy, a.size // 2, a.name)
+            elif isinstance(a, HistoryPseudostate):
+                draw_history_node(c, a.cx, a.cy, a.r, deep=a.deep)
         return c.frame()
 
     def render_svg(self, routing='orthogonal', layer_gap=50, node_gap=12, margin=8, scale=1.5):
@@ -1457,6 +1832,8 @@ class Diagram:
         # Build keep-away sets for label collision avoidance
         all_path_px = set()
         for e in self.edges:
+            if self._is_visual_containment(e):
+                continue
             pts = e.waypoints
             for i in range(len(pts) - 1):
                 x1, y1 = pts[i]
@@ -1471,6 +1848,8 @@ class Diagram:
                         all_path_px.add((x, y1))
 
         for e in self.edges:
+            if self._is_visual_containment(e):
+                continue
             own = set(e.waypoints)
             for i in range(len(e.waypoints) - 1):
                 x1, y1 = e.waypoints[i]
@@ -1490,7 +1869,10 @@ class Diagram:
                 continue
             svg_draw_node(c, n)
             for p in n.ports:
-                svg_draw_port(c, p)
+                if isinstance(p, (EntryPoint, ExitPoint)):
+                    svg_draw_entry_exit_point(c, p.cx, p.cy, PORT_W // 2, label=p.label, kind=getattr(p, 'kind', 'entry'))
+                else:
+                    svg_draw_port(c, p)
         for com in self.comments:
             svg_draw_comment(c, com)
         for v in self.views:
@@ -1498,8 +1880,13 @@ class Diagram:
             for child in v.children:
                 svg_draw_node(c, child)
                 for p in child.ports:
-                    svg_draw_port(c, p)
+                    if isinstance(p, (EntryPoint, ExitPoint)):
+                        svg_draw_entry_exit_point(c, p.cx, p.cy, PORT_W // 2, label=p.label, kind=getattr(p, 'kind', 'entry'))
+                    else:
+                        svg_draw_port(c, p)
         for e in self.edges:
+            if self._is_visual_containment(e):
+                continue
             svg_draw_edge(c, e, keep_away=all_path_px - set(e.waypoints))
         for a in self.activities:
             if isinstance(a, StartNode):
@@ -1512,4 +1899,6 @@ class Diagram:
                 svg_draw_fork_join_node(c, a.x, a.y, a.x + a.w, a.y + a.h)
             elif isinstance(a, DecisionNode):
                 svg_draw_decision_node(c, a.cx, a.cy, a.size // 2, a.name)
+            elif isinstance(a, HistoryPseudostate):
+                svg_draw_history_node(c, a.cx, a.cy, a.r, deep=a.deep)
         return c.output(width=w, height=h, padding=pad * scale)

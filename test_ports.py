@@ -24,4 +24,4 @@ d.add_edge(controller, display, source_port=ctrl_out, target_port=disp_in,
 d.add_edge(sensor, display, line_style=DASHED, target_style=OPEN, label='bypass')
 
 # Use wider node_gap to accommodate ports
-print(d.render(routing='orthogonal', node_gap=40))
+print(d.render(routing='pyelk', node_gap=40))
